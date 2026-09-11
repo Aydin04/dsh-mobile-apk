@@ -34,7 +34,7 @@ class AndroidBridge(
   /** 0.13.7：系统「打开方式」选择器（MT 管理器 / 系统文件管理…）。返回 JSON {ok, reason?}。 */
   private val onOpenPathChooser: (path: String, mode: String?) -> String =
     { _, _ -> """{"ok":false,"reason":"bridge not wired"}""" },
-  /** 0.13.0 F1.7：ADB shell 执行原语（授权时执行；未授权失败关闭返回引导 JSON）。 */
+  /** 0.13.0 F1.7：ADB shell 执行原语（授权时执行；未授权Failed关闭返回引导 JSON）。 */
   private val onAdbShell: (cmd: String) -> String = { _ -> "" },
   /** 0.13.0 F1.7：授权状态 JSON（三道人门状态视图，供设置页/授权状态探活）。 */
   private val onGetAdbState: () -> String = { "{}" },
@@ -47,7 +47,7 @@ class AndroidBridge(
   /** 0.13.0 F1.7：回收配对（R6：显式回收 + 审计）。 */
   private val onRevokeAdbPair: () -> Unit = {},
   /** 0.13.0（issue #80；NSD 替换盲扫）：自动发现无线调试端口——返回结构
-   *  {\"pair\": <配对端口|null>, \"connect\": <连接端口|null>, \"candidates\": [...] }，
+   *  {\"pair\": <Pair Port|null>, \"connect\": <Connect Port|null>, \"candidates\": [...] }，
    *  与壳 AdbState.discoverPorts 同形状（桥默认值同为完整结构，不再返回 "[]" 造成两端不一致）。
    *  0.14：Shizuku 探活重设计与豁免升级。 */
   private val onDiscoverAdbPorts: () -> String = { """{"pair":null,"connect":null,"candidates":[]}""" },
@@ -57,7 +57,7 @@ class AndroidBridge(
   private val onSetOverlayEnabled: (Boolean) -> Boolean = { _ -> false },
   /** 0.13.5 W4：无障碍控制通道状态 JSON {enabled, label, restrictedHint}。 */
   private val onA11yStatus: () -> String = { """{"enabled":false}""" },
-  /** 0.13.5 W4：跳系统无障碍设置页（用户手动开启「DSH 设备控制」）。 */
+  /** 0.13.5 W4：跳系统无障碍设置页（用户手动开启「DSH Device Control」）。 */
   private val onOpenA11ySettings: () -> Unit = {},
   /** 0.13.5 W4：一键解锁受限设置（Android 13+ 侧载应用默认禁止开启无障碍）。返回 JSON {ok, message}。 */
   private val onUnlockRestrictedSettings: () -> String = { """{"ok":false,"message":"未接线"}""" },
@@ -192,14 +192,14 @@ class AndroidBridge(
   @JavascriptInterface
   fun getAdbState(): String = onGetAdbState()
 
-  /** 应用内「允许访问」开关（第二道人门；默认关闭；关闭即通道失败关闭）。 */
+  /** 应用内「允许访问」开关（第二道人门；默认关闭；关闭即通道Failed关闭）。 */
   @JavascriptInterface
   fun setAdbAllow(enable: Boolean) {
     onSetAdbAllow(enable)
   }
 
   /**
-   * 门3 配对码：六位数字 + 无线调试弹窗的「配对端口/连接端口」；
+   * 门3 配对码：六位数字 + 无线调试弹窗的「Pair Port/Connect Port」；
    * AdbState 运行真实 adb pair 握手（码值不入审计，只记长度）。
    * F3 结构化返回（JSON 文本 {ok, reason, message}）：前端按机器可读 reason 分流文案
    * （window-closed/protocol-fault/server-not-ready/handshake-timeout…），不再笼统布尔。
@@ -214,7 +214,7 @@ class AndroidBridge(
     onRevokeAdbPair()
   }
 
-  /** 自动发现无线调试端口（issue #80）：返回配对端口候选 JSONArray（顺序端序）。
+  /** 自动发现无线调试端口（issue #80）：返回Pair Port候选 JSONArray（顺序端序）。
    *  耗时为原生 TCP 盲扫（毫秒/端口）；无线调试未开时返回 []。 */
   @JavascriptInterface
   fun discoverAdbPorts(): String = onDiscoverAdbPorts()
@@ -231,7 +231,7 @@ class AndroidBridge(
   @JavascriptInterface
   fun a11yStatus(): String = onA11yStatus()
 
-  /** 0.13.5 W4：跳系统无障碍设置页（开启「DSH 设备控制」）。 */
+  /** 0.13.5 W4：跳系统无障碍设置页（开启「DSH Device Control」）。 */
   @JavascriptInterface
   fun openA11ySettings() {
     onOpenA11ySettings()

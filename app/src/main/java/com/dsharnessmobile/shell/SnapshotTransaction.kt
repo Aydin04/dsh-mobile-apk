@@ -146,7 +146,7 @@ internal object SnapshotTransaction {
             val liveChild = File(liveDsh, child.name)
             if (child.name in preservedNames && SnapshotFs.exists(liveChild)) {
               // User data stays exactly where it is.
-              onEntry("保留用户数据 " + child.name)
+              onEntry("Preserve user data " + child.name)
               continue
             }
             replaceEntry(

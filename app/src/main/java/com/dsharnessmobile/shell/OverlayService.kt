@@ -25,7 +25,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * 悬浮球 v2（PRD-overlay-v2，rev5 定稿）。v1 四问题 + 状态建模错误全部结构性修复：
+ * 悬浮球 v2（PRD-overlay-v2，rev5 定稿）。v1 四问题 + 状态建模Error全部结构性修复：
  *
  * - 收起 = 纯白球黑鲸（34dp，与应用图标同源 ic_launcher_foreground.png，bbox 裁剪居中），
  *   状态 = 环绕低饱和光环（空闲微白 / 工作中蓝 / 离线红），球体不随状态变色（纯黑白）；
@@ -82,7 +82,7 @@ class OverlayService : Service() {
   internal var sessionBusy = false               // 会话维（工作中）
   internal var toolCount = 0                     // 当前轮次工具调用数
   internal var turnStartedAt = 0L                // 运行时钟锚点
-  // 乐观忙态置位时刻（0=无）：发送成功/应答提交后、live 事件（turn_start/tool_call）到来前的
+  // 乐观忙态置位时刻（0=无）：发送Success/应答提交后、live 事件（turn_start/tool_call）到来前的
   // 空窗补偿——live 流只有轮次中后段事件，此空窗内壳侧原本完全失聪（面板显示「空闲」，2026-09-05 实测回归）。
   internal var optimisticBusyAt = 0L
   internal var currentToolName = ""              // 当前运行工具（模板化显示：工具类型+概览）
@@ -310,7 +310,7 @@ class OverlayService : Service() {
           downX = ev.rawX; downY = ev.rawY
           startX = p.x; startY = p.y
           moved = false
-          // DOWN 时取消可能仍在跑的 spring（防旧动画的 translationX 覆盖手指拖动）
+          // DOWN 时Cancel可能仍在跑的 spring（防旧动画的 translationX 覆盖手指拖动）
           cancelSpring()
           true
         }
@@ -360,7 +360,7 @@ class OverlayService : Service() {
     p.y = p.y.coerceIn(margin, (h - winH - margin).coerceAtLeast(margin))
   }
 
-  /** 取消进行中的 spring 动画并把 root.translationX/Y 归零（治「消失」：translation 残留）。 */
+  /** Cancel进行中的 spring 动画并把 root.translationX/Y 归零（治「消失」：translation 残留）。 */
   private var springAnim: SpringAnimation? = null
   private fun cancelSpring() {
     val s = springAnim ?: return
@@ -413,7 +413,7 @@ class OverlayService : Service() {
 
   // ── 乐观忙态（发送/应答空窗补偿） ─────────────────────────────────
 
-  /** 乐观置忙：发送成功/应答提交后立即亮工作态，补 live 事件到来前的空窗；
+  /** 乐观置忙：发送Success/应答提交后立即亮工作态，补 live 事件到来前的空窗；
    *  45s 内无任何目标会话 live 事件则由探活 tick 回退空闲（轮次未真正启动的兜底）。 */
   internal fun markBusyOptimistic() {
     if (!sessionBusy) { sessionBusy = true; turnStartedAt = System.currentTimeMillis() }
@@ -514,7 +514,7 @@ class OverlayService : Service() {
         // 必须走 deriveHalo()：此 tick 每 10s 一次，自带判定会漏 PENDING 把待答光环盖回白色
         setHalo(deriveHalo())
         if (expanded && !running) {
-          panel.statusText?.let { ShimmerTextView::class.java.cast(it).setShimmering(false); it.setTextColor(0xFFE04848.toInt()); it.text = "引擎离线" }
+          panel.statusText?.let { ShimmerTextView::class.java.cast(it).setShimmering(false); it.setTextColor(0xFFE04848.toInt()); it.text = "Engine Offline" }
         }
       }
     }.start()
@@ -581,7 +581,7 @@ class OverlayService : Service() {
     if (activeSessionId.isEmpty()) { flashStatus("无活动会话"); return }
     setHalo(Halo.WORKING)
     postRpc("session/cancel", JSONObject().put("request", JSONObject().put("sessionId", activeSessionId))) { code, body ->
-      if (code == 200) flashStatus("已发送停止指令") else flashStatus("停止失败（HTTP $code）")
+      if (code == 200) flashStatus("已发送停止指令") else flashStatus("停止Failed（HTTP $code）")
     }
   }
 
@@ -589,9 +589,9 @@ class OverlayService : Service() {
   internal fun requestSend() {
     val text = panel.inputBox?.text?.toString()?.trim() ?: return
     if (text.isEmpty()) return
-    if (!engineRunning) { flashStatus("引擎离线"); return }
+    if (!engineRunning) { flashStatus("Engine Offline"); return }
     panel.inputBox?.setText("")
-    val steer = sessionBusy   // 发送前的忙态决定模式与提示语（成功回调里已被乐观置忙覆盖）
+    val steer = sessionBusy   // 发送前的忙态决定模式与Notice语（Success回调里已被乐观置忙覆盖）
     // 0.1.2-rc.1 SessionPromptRequest：requestId 必填（幂等键）+ sessionId/mode/content
     val payload = JSONObject()
       .put("requestId", "overlay-" + System.currentTimeMillis() + "-" + (0..999).random())
@@ -602,14 +602,14 @@ class OverlayService : Service() {
     val send = Runnable {
       postRpc("session/prompt", JSONObject().put("request", payload)) { code, body ->
         if (code == 200) {
-          // 发送成功：立即亮工作态（乐观忙态）——live 事件（turn_start/tool_call）到来前
+          // 发送Success：立即亮工作态（乐观忙态）——live 事件（turn_start/tool_call）到来前
           // 原本显示「空闲」，实测被用户点名（2026-09-05）；45s 无 live 确认由探活兜底回退。
           markBusyOptimistic()
           flashStatus(if (steer) "已插话" else "已发送")
         } else {
-          // 发送失败：回填已输入文本 + 提示（避免用户以为发出去了——#4）
+          // 发送Failed：回填已输入文本 + Notice（避免用户以为发出去了——#4）
           panel.inputBox?.setText(text)
-          flashStatus("发送失败（HTTP $code）")
+          flashStatus("发送Failed（HTTP $code）")
         }
       }
     }
@@ -628,11 +628,11 @@ class OverlayService : Service() {
             send.run()
           } else {
             panel.inputBox?.setText(text)
-            flashStatus("建会话失败（解析）")
+            flashStatus("建会话Failed（解析）")
           }
         } else {
           panel.inputBox?.setText(text)
-          flashStatus("建会话失败（HTTP $code）")
+          flashStatus("建会话Failed（HTTP $code）")
         }
       }
     } else {
@@ -654,7 +654,7 @@ class OverlayService : Service() {
     } catch (_: Exception) { "" }
   }
 
-  /** 面板状态行短暂提示（发送/停止结果）。 */
+  /** 面板状态行短暂Notice（发送/停止结果）。 */
   internal fun flashStatus(msg: String) {
     main.post {
       val st = panel.statusText ?: return@post

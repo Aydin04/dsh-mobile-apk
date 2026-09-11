@@ -85,7 +85,7 @@ object FileIncoming {
   /** 文件大小上限（PRD R17 缓解：R17 注入面/隐私——超限文件拒绝进入工作区。200MB 覆盖常见文档/图片/视频）。 */
   private const val MAX_FILE_BYTES = 200L * 1024 * 1024
 
-  /** 安全拷贝进临时工作区；返回落盘路径（或 null——超限/IO 失败）。 */
+  /** 安全拷贝进临时工作区；返回落盘路径（或 null——超限/IO Failed）。 */
   fun copyIn(context: Context, uri: Uri): File? {
     return try {
       val dir = tmpWorkspace(context)
@@ -183,7 +183,7 @@ object FileIncoming {
    * VIEW/SEND 外部来件接线（0.13.0 F5/M3.5；自 MainActivity.maybeProcessIncoming 迁入）：
    * 校验净化 → 拷贝临时工作区 → 通知引擎侧插件。
    * 外部路径不留原件引用（一律拷贝，权限模型对齐 F1.8）；引擎未启动先启动（启动流先于通知）。
-   * 拒绝/失败提示经 notify 回调（MainActivity.showTestNotification）。
+   * 拒绝/FailedNotice经 notify 回调（MainActivity.showTestNotification）。
    */
   fun processIncomingIntent(context: Context, intent: Intent?, notify: (title: String, text: String) -> Unit) {
     if (intent == null) return
@@ -201,7 +201,7 @@ object FileIncoming {
       return
     }
     val target = copyIn(context, validated) ?: run {
-      notify("文件拷贝失败", "无法读取传入文件")
+      notify("文件拷贝Failed", "无法读取传入文件")
       return
     }
     recordOpening(context, target.absolutePath)
@@ -224,7 +224,7 @@ object FileIncoming {
 
   /**
    * 用外部阅读器打开文件路径（issue #52；自 MainActivity.openNativePathWithReader 迁入）：
-   * 引擎 native-path-opener 仅支持 mac/win/linux，Android 上文件提及按钮会失败。路径解析：
+   * 引擎 native-path-opener 仅支持 mac/win/linux，Android 上文件提及按钮会Failed。路径解析：
    * - /storage/emulated/0/Documents/dshdata/...（导出仓库）→ FileProvider content Uri
    * - 应用私有文件区（工作区/usr/bin）→ FileProvider content Uri
    * - 其他（content://、不可读、或私密区路径如 .dsh/.credentials.yaml）→ false，

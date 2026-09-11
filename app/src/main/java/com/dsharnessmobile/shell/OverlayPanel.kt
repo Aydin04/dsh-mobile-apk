@@ -56,7 +56,7 @@ class OverlayPanel(private val svc: OverlayService) {
   // 应答统一 POST /api/$events/result，client-request 信封 payload={args:{clientId,eventId,outcome}}：
   //   审批 outcome={kind:"result",value:"allowed-once"|"rejected"}（值=审批词汇原字符串）；
   //   提问 outcome={kind:"result",value:{answers:[{id,selected:[label,…],custom?}]}}（selected 数组）；
-  //   提问跳过 outcome={kind:"rejected",error:{name,message}}；审批无取消通道。
+  //   提问跳过 outcome={kind:"rejected",error:{name,message}}；审批无Cancel通道。
   private var mux: MuxClient? = null
   @Volatile private var eventsClientId: String = ""   // ready 帧分配；应答与流实例绑定
   internal val pendingApprovals = LinkedHashMap<String, PendingApproval>()
@@ -160,7 +160,7 @@ class OverlayPanel(private val svc: OverlayService) {
     // simple_spinner_item 默认深色文字在暗色面板不可见 → 自定义 adapter 按主题着色。
     val pickerSpinner = Spinner(svc).apply {
       tag = "overlay-sessionpicker"
-      contentDescription = "选择发送对话"
+      contentDescription = "Select Conversation"
       // 下拉弹出层 = 独立 popup 窗口，默认方形背景 + item 各自涂底 → 圆角无从谈起。
       // 解法：popup 窗口背景给圆角渐变底（用户要求「圆角矩形」），item 底色改透明。
       // 注意：Spinner.popupBackground 在 Kotlin 侧是只读合成属性（无 setter 配对名），必须显式调用。
@@ -206,7 +206,7 @@ class OverlayPanel(private val svc: OverlayService) {
     sessionPicker = pickerSpinner
 
     val status = ShimmerTextView(svc).apply {
-      text = "空闲"
+      text = "Idle"
       textSize = 13f
       setTypeface(null, android.graphics.Typeface.BOLD)
       setTextColor(c.idleText)
@@ -235,12 +235,12 @@ class OverlayPanel(private val svc: OverlayService) {
     clockText = clock
 
     // 收起按钮（✕）：放顶行（会话选择行）右端。旧版收起箭头在状态行、与 Spinner 下拉
-    // 三角同为三角且下拉展开后被列表盖住（视觉引导错误，用户实测）——✕ 与下拉三角可区分
+    // 三角同为三角且下拉展开后被列表盖住（视觉引导Error，用户实测）——✕ 与下拉三角可区分
     // 且位于下拉弹出层之上，永不被盖。
     val close = ImageView(svc).apply {
       setImageResource(R.drawable.dsh_ic_close)
       setColorFilter(c.chevron)
-      contentDescription = "收起面板"
+      contentDescription = "Collapse Panel"
       isClickable = true
       setOnClickListener { svc.hidePanel() }
     }
@@ -267,7 +267,7 @@ class OverlayPanel(private val svc: OverlayService) {
 
     // 输入行：输入框 + 蓝圆发送（白箭头 IconSendOutline16）+ 红圆停止（白方块 rx=3）
     val input = EditText(svc).apply {
-      hint = "发消息可插话…"
+      hint = "Type a message to interrupt…"
       textSize = 13f
       isSingleLine = true
       inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
@@ -421,18 +421,18 @@ class OverlayPanel(private val svc: OverlayService) {
         textSize = 12f
         setTextColor(0xFFB8860B.toInt())
         setTypeface(null, android.graphics.Typeface.BOLD)
-        text = "权限审批"
+        text = "Permission Approval"
       }
       box.addView(title)
       val body = TextView(svc).apply {
         textSize = 13f
         setTextColor(textColor)
-        text = listOf("工具 ${a.toolName}", a.reason).filter { it.isNotBlank() }.joinToString("：")
+        text = listOf("Tool ${a.toolName}", a.reason).filter { it.isNotBlank() }.joinToString("：")
       }
       box.addView(body)
       val buttonRow = LinearLayout(svc).apply { orientation = LinearLayout.HORIZONTAL }
-      buttonRow.addView(pendingChip("批准一次", filled = true, red = false, dp) { respondApproval(a, "allowed-once") }, lpChip(dp))
-      buttonRow.addView(pendingChip("拒绝", filled = false, red = true, dp) { respondApproval(a, "rejected") }, lpChip(dp))
+      buttonRow.addView(pendingChip("Approve Once", filled = true, red = false, dp) { respondApproval(a, "allowed-once") }, lpChip(dp))
+      buttonRow.addView(pendingChip("Reject", filled = false, red = true, dp) { respondApproval(a, "rejected") }, lpChip(dp))
       box.addView(buttonRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
         setMargins(0, (6 * dp).toInt(), 0, 0)
       })
@@ -446,7 +446,7 @@ class OverlayPanel(private val svc: OverlayService) {
     val item = qe.items.optJSONObject(qPage) ?: return
     val qid = item.optString("id")
     val multi = item.optBoolean("multiSelect", false)
-    // header 行：灰色标签（官方 header 字段）+ 右侧 ✕（取消整问）
+    // header 行：灰色标签（官方 header 字段）+ 右侧 ✕（Cancel整问）
     val header = LinearLayout(svc).apply {
       orientation = LinearLayout.HORIZONTAL
       gravity = Gravity.CENTER_VERTICAL
@@ -454,7 +454,7 @@ class OverlayPanel(private val svc: OverlayService) {
     header.addView(TextView(svc).apply {
       textSize = 11f
       setTextColor(subColor)
-      text = item.optString("header", "").ifBlank { "问题 ${qPage + 1}" }
+      text = item.optString("header", "").ifBlank { "Question ${qPage + 1}" }
     }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
     header.addView(TextView(svc).apply {
       text = "✕"
@@ -479,7 +479,7 @@ class OverlayPanel(private val svc: OverlayService) {
     if (opts != null) {
       for (oi in 0 until opts.length().coerceAtMost(6)) {
         val o = opts.optJSONObject(oi) ?: continue
-        val label = o.optString("label").ifBlank { "选项${oi + 1}" }
+        val label = o.optString("label").ifBlank { "Option ${oi + 1}" }
         val on = if (multi) multiSel[qid]?.contains(label) == true else qSingle[qid] == label
         val row = LinearLayout(svc).apply {
           orientation = LinearLayout.HORIZONTAL
@@ -541,7 +541,7 @@ class OverlayPanel(private val svc: OverlayService) {
       background = GradientDrawable().apply { cornerRadius = 5 * dp; setColor(0x33808080) }
     }, LinearLayout.LayoutParams((18 * dp).toInt(), (18 * dp).toInt()).apply { marginEnd = (8 * dp).toInt() })
     val edit = EditText(svc).apply {
-      hint = "输入你的答案"
+      hint = "Enter your answer"
       textSize = 13f
       isSingleLine = true
       setTextColor(textColor)
@@ -587,22 +587,22 @@ class OverlayPanel(private val svc: OverlayService) {
       })
       foot.addView(View(svc), LinearLayout.LayoutParams(0, 1, 1f))
       if (qPage > 0) {
-        foot.addView(pendingChip("跳过本题", filled = false, red = false, dp) {
+        foot.addView(pendingChip("Skip Question", filled = false, red = false, dp) {
           qSingle.remove(qid); qCustom.remove(qid); multiSel.remove(qid)
           qPage = (qPage + 1).coerceAtMost(n - 1)
           renderPendingCard(true)
         }, lpChip(dp))
       }
       val last = qPage == n - 1
-      foot.addView(pendingChip(if (last) "提交" else "下一题", filled = true, red = false, dp) {
+      foot.addView(pendingChip(if (last) "Submit" else "Next", filled = true, red = false, dp) {
         if (!last) { qPage++; renderPendingCard(true); return@pendingChip }
         respondQuestion(qe)
       }, lpChip(dp))
     } else {
       foot.addView(View(svc), LinearLayout.LayoutParams(0, 1, 1f))
       // 单问多选无自动提交路径 → 给「提交」；单选点选项即答、自定义走键盘 DONE 即答
-      if (multi) foot.addView(pendingChip("提交", filled = true, red = false, dp) { respondQuestion(qe) }, lpChip(dp))
-      foot.addView(pendingChip("跳过", filled = false, red = false, dp) { dismissQuestion(qe) }, lpChip(dp))
+      if (multi) foot.addView(pendingChip("Submit", filled = true, red = false, dp) { respondQuestion(qe) }, lpChip(dp))
+      foot.addView(pendingChip("Skip", filled = false, red = false, dp) { dismissQuestion(qe) }, lpChip(dp))
     }
     box.addView(foot, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     box.visibility = View.VISIBLE
@@ -613,7 +613,7 @@ class OverlayPanel(private val svc: OverlayService) {
   /**
    * 网关 RemoteEventResult：outcome = {kind:"result",value}（审批=词汇原字符串；
    * 提问={answers:[…]}）或 {kind:"rejected",error:{name,message}}（提问跳过）。
-   * clientId 来自 ready 帧——应答与流实例绑定，未就绪（流未 ready）时直接报失败。
+   * clientId 来自 ready 帧——应答与流实例绑定，未就绪（流未 ready）时直接报Failed。
    */
   private fun postEventResult(eventId: String, outcome: JSONObject, onAccepted: (Boolean) -> Unit) {
     Thread {
@@ -661,9 +661,9 @@ class OverlayPanel(private val svc: OverlayService) {
         pendingApprovals.remove(a.eventId)
         // 批准后轮次继续（工具真正执行），下个 live 事件前先亮工作态（同发送空窗逻辑）
         svc.markBusyOptimistic()
-        svc.flashStatus(if (outcome == "allowed-once") "已批准" else "已拒绝")
+        svc.flashStatus(if (outcome == "allowed-once") "Approved" else "Rejected")
         onPendingChanged()
-      } else svc.flashStatus("应答失败")
+      } else svc.flashStatus("Response Failed")
     }
   }
 
@@ -689,13 +689,13 @@ class OverlayPanel(private val svc: OverlayService) {
         pendingQuestions.remove(qe.eventId)
         // 作答后轮次继续，下个 live 事件前先亮工作态（同发送空窗逻辑）
         svc.markBusyOptimistic()
-        svc.flashStatus("已回答")
+        svc.flashStatus("Answered")
         onPendingChanged()
-      } else svc.flashStatus("应答失败")
+      } else svc.flashStatus("Response Failed")
     }
   }
 
-  /** 跳过提问 = 拒绝该 waterfall（outcome rejected；审批无取消通道）。 */
+  /** 跳过提问 = 拒绝该 waterfall（outcome rejected；审批无Cancel通道）。 */
   private fun dismissQuestion(qe: PendingQuestion) {
     val outcomeJson = JSONObject().put("kind", "rejected").put(
       "error",
@@ -704,9 +704,9 @@ class OverlayPanel(private val svc: OverlayService) {
     postEventResult(qe.eventId, outcomeJson) { accepted ->
       if (accepted) {
         pendingQuestions.remove(qe.eventId)
-        svc.flashStatus("已跳过")
+        svc.flashStatus("Skipped")
         onPendingChanged()
-      } else svc.flashStatus("应答失败")
+      } else svc.flashStatus("Response Failed")
     }
   }
 
@@ -738,11 +738,11 @@ class OverlayPanel(private val svc: OverlayService) {
         if (svc.pendingKind == "question") {
           (it as ShimmerTextView).setShimmering(false)
           it.setTextColor(0xFFB8860B.toInt())
-          it.text = "等待你的回答…"
+          it.text = "Waiting for your answer…"
         } else if (svc.pendingKind == "approval") {
           (it as ShimmerTextView).setShimmering(false)
           it.setTextColor(0xFFB8860B.toInt())
-          it.text = "等待权限审批…"
+          it.text = "Waiting for permission approval…"
         } else if (svc.sessionBusy) {
           if (svc.currentToolName.isNotBlank()) {
             // 模板化（用户拍板）：调工具 → 工具类型 + 概览；思考 → Deep diving 扫光。
@@ -758,11 +758,11 @@ class OverlayPanel(private val svc: OverlayService) {
         } else {
           (it as ShimmerTextView).setShimmering(false)
           it.setTextColor(0xFF8A8F98.toInt())
-          it.text = if (svc.engineRunning) "空闲" else "引擎离线"
+          it.text = if (svc.engineRunning) "Idle" else "Engine Offline"
         }
       }
       toolChip?.let {
-        if (svc.toolCount > 0) { it.text = "工具 ×${svc.toolCount}"; it.visibility = View.VISIBLE }
+        if (svc.toolCount > 0) { it.text = "Tools ×${svc.toolCount}"; it.visibility = View.VISIBLE }
         else it.visibility = View.GONE
       }
       updateClock()
@@ -778,7 +778,7 @@ class OverlayPanel(private val svc: OverlayService) {
     if (elapsed < 15_000) { ct.visibility = View.GONE; return }
     ct.visibility = View.VISIBLE
     val sec = elapsed / 1000
-    ct.text = if (sec >= 60) "${sec / 60}分%02d秒".format(sec % 60) else "${sec}s"
+    ct.text = if (sec >= 60) "${sec / 60}m %02ds".format(sec % 60) else "${sec}s"
   }
 
   /** 拉取 session.list → 刷新「目标会话」下拉（第一项恒为「新会话」）。 */
@@ -787,7 +787,7 @@ class OverlayPanel(private val svc: OverlayService) {
       val sp = sessionPicker ?: return@postRpc
       val ad = pickerAdapter ?: return@postRpc
       pickerLabels.clear(); pickerIds.clear()
-      pickerLabels.add("＋ 新会话"); pickerIds.add("")
+      pickerLabels.add("+ New Session"); pickerIds.add("")
       // 0.13.5：未钉住时，默认选「正在工作的会话」；没有则选最近更新的非空会话（用户诉求：
       // 打开悬浮球就该对着当前在跑的对话，而不是默认新建）。running 来自 session/list 官方字段。
       var runningId = ""
@@ -803,9 +803,9 @@ class OverlayPanel(private val svc: OverlayService) {
               if (sid.isEmpty()) continue
               val titleObj = it.optJSONObject("projections")?.optJSONObject("values")?.opt("title")
               val title = if (titleObj == null || titleObj === JSONObject.NULL) "" else titleObj.toString()
-                .ifBlank { "（第 ${i + 1} 个会话）" }
+                .ifBlank { "(Session ${i + 1})" }
               // 已选当前目标：置顶展示，便于核对
-              val label = if (sid == svc.activeSessionId) "$title（当前）" else title
+              val label = if (sid == svc.activeSessionId) "$title (Current)" else title
               pickerLabels.add(label); pickerIds.add(sid)
               if (runningId.isEmpty() && it.optBoolean("running", false)) runningId = sid
               if (recentId.isEmpty() && !it.optBoolean("blank", false)) recentId = sid

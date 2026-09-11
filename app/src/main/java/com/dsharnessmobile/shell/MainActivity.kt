@@ -77,7 +77,7 @@ class MainActivity : ComponentActivity() {
   /** 窗口/页面 UI chrome（沉浸式/字体/剪贴板/常亮/主题推送）。 */
   private val uiChrome = WebUiChrome(this)
 
-  /** 崩溃标记：记录未捕获异常摘要，下次启动测试界面提示（不吞异常）。 */
+  /** 崩溃标记：记录未捕获异常摘要，下次启动测试界面Notice（不吞异常）。 */
   internal var crashInfo: String? = null
   /** 用户主动关闭后，前台监控与任何尚未结束的启动线程不得重新展示 WebUI。 */
   @Volatile
@@ -90,7 +90,7 @@ class MainActivity : ComponentActivity() {
     private const val TAG = "dsh-shell"
     const val ACTION_UPDATE = "com.dsharnessmobile.shell.action.UPDATE"
 
-    /** #120：显式拒绝哨兵路径前缀（引擎侧识别为拒绝而非取消，见 host-web-compat）。
+    /** #120：显式拒绝哨兵路径前缀（引擎侧识别为拒绝而非Cancel，见 host-web-compat）。
      *  协议：`__dsh_pick_refused__:<reason>`，reason = permission-denied | android-10。 */
     const val PICK_REFUSED_PREFIX = "__dsh_pick_refused__:"
 
@@ -123,7 +123,7 @@ class MainActivity : ComponentActivity() {
     // 0.13.3 W2：引擎鉴权模块绑定应用上下文（EngineProbe 等 object 调用方的 cookie 来源）。
     EngineAuth.initContext(this)
     // 崩溃标记：进程级未捕获异常写入 filesDir/.crashed（下次启动测试界面
-    // 提示），随后交回默认 handler——只记录，不吞异常、不阻止崩溃。
+    // Notice），随后交回默认 handler——只记录，不吞异常、不阻止崩溃。
     installCrashMarker()
     // 启动即 TTL 清扫临时工作区（issue #60 F5.1：7 天过期文件自动回收）
     try { FileIncoming.sweepExpired(this) } catch (_: Throwable) {}
@@ -186,7 +186,7 @@ class MainActivity : ComponentActivity() {
       engineFlow.runUpdate()
     } else {
       // 来件接线（VIEW/SEND 外部来件）已迁至 FileIncoming.processIncomingIntent：
-      // 校验净化→拷贝临时工作区→通知引擎侧插件；拒绝/失败经 showTestNotification 提示。
+      // 校验净化→拷贝临时工作区→通知引擎侧插件；拒绝/Failed经 showTestNotification Notice。
       FileIncoming.processIncomingIntent(this, intent) { title, text -> showTestNotification(title, text) }
       startEngineFlow()
     }
@@ -204,7 +204,7 @@ class MainActivity : ComponentActivity() {
       engineFlow.startMonitor()
     }
     // 2026-08-24 修复（真机实锤：通知链路不消费的根因）：startEngineService（foreground service
-    // + WatchdogV2 tick）此前只在 startEngineFlow 首次轮询成功时挂载——**引擎先跑、app 后启动
+    // + WatchdogV2 tick）此前只在 startEngineFlow 首次轮询Success时挂载——**引擎先跑、app 后启动
     // （后台恢复/热启动）时服务从未启动 → watchdog 缺失 → 通知消费（task-done 标记）/自动回退
     // /唤醒锁全链路失效**。onResume 幂等确保服务启动（已在跑则 no-op）。
     if (!userClosedEngine) {
@@ -480,7 +480,7 @@ class MainActivity : ComponentActivity() {
         // 0.13.2 W7：悬浮球开关（控制器处理 overlay 权限引导；onResume 补启已授权的开关）。
         onGetOverlayEnabled = { OverlayController.isEnabled(this) },
         onSetOverlayEnabled = { enable -> OverlayController.setEnabled(this, enable) },
-        // 0.14 真实配对：码值只经 adb argv（壳侧），端口取自系统「无线调试」弹窗；配对成功才写 paired。
+        // 0.14 真实配对：码值只经 adb argv（壳侧），端口取自系统「无线调试」弹窗；配对Success才写 paired。
         // F3 结构化结果（JSON ok/reason/message）：前端按 reason 分流文案，拒绝「输什么都像码错」。
         onSetAdbPair = { code, pairPort, connectPort ->
           AdbState.pairWithCodeJson(this, engineManager, code, pairPort, connectPort)
@@ -497,7 +497,7 @@ class MainActivity : ComponentActivity() {
     )
     // 0.13.3 W2：引擎 /api 全前缀走浏览器鉴权（401）。WebView 首屏先换好 cookie：
     // Kotlin 侧 P0（engine.log token 交换）/P1（credentials 密钥自 mint）拿到 cookie 后
-    // 注入 CookieManager——同源 XHR/WS 自动携带；交换失败时回退带 token 的 URL 让引擎
+    // 注入 CookieManager——同源 XHR/WS 自动携带；交换Failed时回退带 token 的 URL 让引擎
     // 303+Set-Cookie 自愈（官方交换路径）。
     val authCookie = EngineAuth.refresh(this)
     if (authCookie != null) {
@@ -548,7 +548,7 @@ class MainActivity : ComponentActivity() {
     }
   }
 
-  /** M7：主题延迟重推 Runnable 引用（onDestroy 取消用）。 */
+  /** M7：主题延迟重推 Runnable 引用（onDestroy Cancel用）。 */
   private var themeRetryRunnable: Runnable? = null
 
   /** 系统深色状态推送：某些厂商 WebView 的 prefers-color-scheme 不跟随
@@ -575,7 +575,7 @@ class MainActivity : ComponentActivity() {
             "window.__dshThemeBridge && window.__dshThemeBridge.setDark(" + dark + ")", null,
           )
         } catch (_: Exception) {
-          // 页面/WebView 已销毁：重推失败无害。
+          // 页面/WebView 已销毁：重推Failed无害。
         }
       }
       themeRetryRunnable = runnable
@@ -613,7 +613,7 @@ class MainActivity : ComponentActivity() {
         null,
       )
     } catch (_: Exception) {
-      // 页面/WebView 尚未就绪：onPageFinished 会补推当前缓存值。
+      // 页面/WebView Not ready yet：onPageFinished 会补推当前缓存值。
     }
   }
 
@@ -629,7 +629,7 @@ class MainActivity : ComponentActivity() {
   private var screenWakeLock: PowerManager.WakeLock? = null
 
   /**
-   * 0.13.5 W4：跳系统无障碍设置页（用户手动开启「DSH 设备控制」）。
+   * 0.13.5 W4：跳系统无障碍设置页（用户手动开启「DSH Device Control」）。
    * Android 13+ 侧载应用可能因受限设置而看不到开关——由设置页的「一键解锁」按钮先 appops 解锁。
    */
   private fun openAccessibilitySettings() {
@@ -708,7 +708,7 @@ class MainActivity : ComponentActivity() {
 
   /** 导出结果回传 WebView：UI 插件经 window.__dshExportResult 弹软件内结果框。 */
   internal fun pushExportResult(ok: Boolean, detail: String) {
-    val title = if (ok) "导出成功" else "导出失败"
+    val title = if (ok) "Export Successful" else "Export Failed"
     val payload = "{\"ok\":" + ok + ",\"title\":" + jsString(title) + ",\"detail\":" + jsString(detail) + "}"
     webView.post {
       webView.evaluateJavascript(
@@ -749,7 +749,7 @@ class MainActivity : ComponentActivity() {
         )
         LogCollector.log("dsh-saf", "raw 写探测: " + probe.take(200))
       } catch (t: Throwable) {
-        LogCollector.log("dsh-saf", "appop 解锁失败: " + t.message)
+        LogCollector.log("dsh-saf", "appop 解锁Failed: " + t.message)
       }
     }.start()
   }

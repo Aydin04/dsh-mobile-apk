@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 本类在壳侧**长轮询**取活并回填结果。长轮询（默认 5s）比 500ms 短轮询更轻：
  * 空闲时每 5 秒一次请求，有活时引擎侧立即唤醒 → 延迟接近 0。
  *
- * 失败关闭：取活/回填任何异常只记录并退避重试，不猜测、不重放动作。
+ * Failed关闭：取活/回填任何异常只记录并退避重试，不猜测、不重放动作。
  * 引擎未起时退避到 10s，避免空转耗电。
  */
 class ControlPoller(private val service: DeviceControlService) {
@@ -104,7 +104,7 @@ class ControlPoller(private val service: DeviceControlService) {
     }
   }
 
-  /** POST JSON 并解析响应；非 2xx 或解析失败返回 null（调用方退避）。 */
+  /** POST JSON 并解析响应；非 2xx 或解析Failed返回 null（调用方退避）。 */
   private fun post(path: String, body: JSONObject): JSONObject? {
     val connection = URL(BASE + path).openConnection(Proxy.NO_PROXY) as HttpURLConnection
     return try {

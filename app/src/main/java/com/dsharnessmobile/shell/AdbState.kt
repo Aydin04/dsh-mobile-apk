@@ -22,9 +22,9 @@ import java.util.concurrent.TimeUnit
  * 被提权方（AI/设置页端点）不得自改授权布尔。
  *
  * 真实通道（内嵌 Termux android-tools adb 36）：
- * - 门3 配对码：`adb pair 127.0.0.1:<配对端口> <码>` 真实 SPAKE2 握手——配对成功才写
+ * - 门3 配对码：`adb pair 127.0.0.1:<Pair Port> <码>` 真实 SPAKE2 握手——配对Success才写
  *   paired=true。**码值只经 argv 直达 adb**（不进日志/审计/SharedPreferences，审计只记长度）。
- * - 配对后 `adb connect 127.0.0.1:<连接端口>` 探活 + 记录 connected。
+ * - 配对后 `adb connect 127.0.0.1:<Connect Port>` 探活 + 记录 connected。
  * - 密钥：`$HOME/.android/adbkey`（生成于配对）——HOME=files/home，与引擎侧（bridge 工具）
  *   共用同一密钥与 adb 服务器，引擎侧无需再配对即可连接执行。
  * - revoke：`adb disconnect` + 本地密钥删除 + paired=false。系统侧授权（adbd 的已配对名单）
@@ -33,8 +33,8 @@ import java.util.concurrent.TimeUnit
  * 端口发现（0.13.0 Q17 定案：NSD/mDNS 替换盲扫，不重复造轮子）：
  *   1. 系统属性直读（精确，保留）：service.adb.tls.pairing_port / service.adb.tls.port。
  *   2. **NSD（Android NsdManager，替代原 TCP 盲扫）**：查 mDNS 服务类型
- *      `_adb-tls-pairing._tcp`（配对端口，仅配对码对话框打开那一下播广告 = 门3 窗口）
- *      与 `_adb-tls-connect._tcp`（配对后的 TLS 连接端口）——AOSP adb_mdns.h 规范
+ *      `_adb-tls-pairing._tcp`（Pair Port，仅配对码对话框打开那一下播广告 = 门3 窗口）
+ *      与 `_adb-tls-connect._tcp`（配对后的 TLS Connect Port）——AOSP adb_mdns.h 规范
  *      服务类型；权威、零扫描开销、无假码探测。
  *   3. 手动 IP:port 输入为硬回退（运营商级 AP 无 mDNS / 配对对话框超时后无广播）。
  */
@@ -49,7 +49,7 @@ object AdbState {
   /** 门1 live 同步键（0.13.0 Q8 判定一致化）：壳把 All Files Access 判定写入 prefs，
    *  引擎侧 dsh-android-bridge live 读它（与门2/门3 同模式），不再依赖重启才生效的 env。 */
   private const val KEY_FULLACCESS = "fullAccess"
-  /** NSD/mDNS 发现超时（配对端口广告仅门3 配对码对话框打开期间存在；2s 内 resolve 不到即放弃。
+  /** NSD/mDNS 发现超时（Pair Port广告仅门3 配对码对话框打开期间存在；2s 内 resolve 不到即放弃。
    *  曾在 5s：bridge 同步调用链上等于界面卡死一小会儿（真机实测报障），压到 2s 收窄窗口）。 */
   private const val NSD_TIMEOUT_MS = 2000L
   private val PAIR_CODE = Regex("^\\d{6}$")
@@ -57,7 +57,7 @@ object AdbState {
   /**
    * 配对结果（比 Boolean 提供引导面；设置页轮询 stateJson 亦可）。
    * @param reason 机器可读原因（F3 结构化结果：前端按此分流文案，不再拿一个笼统布尔瞎猜）——
-   *   成功侧 paired / paired-connect-unconfirmed；失败侧 invalid-code / invalid-port /
+   *   Success侧 paired / paired-connect-unconfirmed；Failed侧 invalid-code / invalid-port /
    *   adb-missing / window-closed（配对码弹窗已关、端口无监听）/ handshake-timeout /
    *   protocol-fault / server-not-ready / unknown。
    */
@@ -103,7 +103,7 @@ object AdbState {
   fun pairPort(context: Context): String? = prefs(context).getString(KEY_PAIR_PORT, null)
   fun connectPort(context: Context): String? = prefs(context).getString(KEY_CONNECT_PORT, null)
 
-  /** 连接探活记录（配对/执行成功后置位；revoke 清位）。 */
+  /** 连接探活记录（配对/执行Success后置位；revoke 清位）。 */
   fun connected(context: Context): Boolean = prefs(context).getBoolean(KEY_CONNECTED, false)
 
   /**
@@ -113,10 +113,10 @@ object AdbState {
    *      （无线调试开启即有效，app 域 SystemProperties 直接可取）。
    *   2. **NSD/mDNS（替代原 TCP 盲扫 37000-45999 + 假码探测——Q17 不重复造轮子）**：
    *      Android NsdManager 查 AOSP `adb_mdns.h` 规范服务类型 `_adb-tls-pairing._tcp`
-   *      （配对端口，仅配对码对话框打开时播广告=门3窗口）与 `_adb-tls-connect._tcp`
-   *      （配对后 TLS 连接端口）。有限超时（NSD_TIMEOUT_MS=5s）内 resolveService 取端口。
+   *      （Pair Port，仅配对码对话框打开时播广告=门3窗口）与 `_adb-tls-connect._tcp`
+   *      （配对后 TLS Connect Port）。有限超时（NSD_TIMEOUT_MS=5s）内 resolveService 取端口。
    *   3. 手动 IP:port 输入为硬回退（运营商级 AP 无 mDNS / 配对对话框超时后无广播）。
-   * @return 结构 JSON："{\"pair\": <配对端口|null>, \"connect\": <连接端口|null>, \"candidates\": [...] }"。
+   * @return 结构 JSON："{\"pair\": <Pair Port|null>, \"connect\": <Connect Port|null>, \"candidates\": [...] }"。
    *   pair/connect 精确填写；candidates 供参考（NSD 命中的端口亦入列）。
    */
   /** 端口发现缓存（bridge 秒回 + 启动后台预取：配对页不再同步等 NSD 卡 UI，2026-08-27 报障修复）。
@@ -143,7 +143,7 @@ object AdbState {
       .put("pair", JSONObject.NULL)
       .put("connect", JSONObject.NULL)
       .put("candidates", JSONArray())
-    // 1. 系统属性直读（精确配对 + 连接端口）——无线调试开启即有效
+    // 1. 系统属性直读（精确配对 + Connect Port）——无线调试开启即有效
     try {
       val cls = Class.forName("android.os.SystemProperties")
       val get = cls.getMethod("get", String::class.java)
@@ -215,43 +215,43 @@ object AdbState {
 
   /**
    * 门3 配对码（6 位）：真实握手——快照内 android-tools adb 36 的 `adb pair`。
-   * 需要用户从系统「无线调试」弹窗抄录：6 位配对码 + 配对端口 + 连接端口（IP 固定 127.0.0.1）。
-   * @return 是否配对成功（paired 状态仅在此写入；码值绝不入审计/日志）。
+   * 需要用户从系统「无线调试」弹窗抄录：6 位配对码 + Pair Port + Connect Port（IP 固定 127.0.0.1）。
+   * @return 是否配对Success（paired 状态仅在此写入；码值绝不入审计/日志）。
    */
   fun pairWithCode(context: Context, engine: EngineManager, code: String, pairPort: Int, connectPort: Int): PairResult {
-    if (!PAIR_CODE.matches(code)) return PairResult(false, false, "配对码必须为 6 位数字", "invalid-code")
-    if (pairPort !in 1..65535 || connectPort !in 1..65535) return PairResult(false, false, "端口必须是 1-65535", "invalid-port")
+    if (!PAIR_CODE.matches(code)) return PairResult(false, false, "Pairing code must be 6 digits", "invalid-code")
+    if (pairPort !in 1..65535 || connectPort !in 1..65535) return PairResult(false, false, "Port must be 1-65535", "invalid-port")
     val adb = adbBin(context)
-    if (adb == null) return PairResult(false, false, "ADB 客户端未就绪（快照缺少 android-tools/adb）", "adb-missing")
+    if (adb == null) return PairResult(false, false, "ADB client not ready (snapshot missing android-tools/adb)", "adb-missing")
     // 真实握手（码值只进 argv；超时 60s 覆盖 spake2 + 网络往返）
     val out = retryRunAdb(engine, listOf("pair", "127.0.0.1:$pairPort", code), 60)
     val text = out.joinToString("\n")
-    val pairedOk = text.contains("Successfully paired") || text.contains("成功配对") || text.contains("已成功配对")
+    val pairedOk = text.contains("Successfully paired") || text.contains("Successfully paired") || text.contains("Successfully paired")
     if (!pairedOk) {
-      // 错误首行（不含码值）入审计，供配对失败诊断（2026-08-27）
+      // Error首行（不含码值）入审计，供配对Failed诊断（2026-08-27）
       val errLine = firstLine(text)
       val reason = classifyFailure(text)
       AdbAudit.log(context, "adb-pair", mapOf("codeLength" to code.length, "result" to "fail", "pairPort" to pairPort, "reason" to reason, "error" to errLine))
       val guidance = when (reason) {
         // 系统配对码弹窗关闭即端口停止监听：2026-08-27 真机实锤，用户在弹窗上点什么都没用
-        "window-closed" -> "配对码窗口已关闭（端口无监听）：请重新打开「无线调试 → 使用配对码配对」，用新码尽快提交"
-        "protocol-fault" -> "本地调试服务握手竞态（已自动重建）：请直接再点一次「配对」"
-        "server-not-ready" -> "本地调试服务未就绪：等几秒后再点「配对」"
-        "handshake-timeout" -> "配对握手超时：确认系统配对码弹窗仍在前台后重试"
-        else -> "配对失败：${errLine.ifBlank { "无输出（请确认已开启「无线调试」并核对端口）" }}"
+        "window-closed" -> "Pairing window closed: please reopen Wireless Debugging and pair again"
+        "protocol-fault" -> "ADB handshake race: please tap Pair again"
+        "server-not-ready" -> "ADB service not ready: wait a few seconds and tap Pair"
+        "handshake-timeout" -> "Pairing timeout: ensure pairing dialog is visible and retry"
+        else -> "Pairing failed: ${errLine.ifBlank { "无输出（请确认已开启「无线调试」并核对端口）" }}"
       }
       return PairResult(false, false, guidance, reason)
     }
-    // 配对成功 → 记录端口（连接端口仅供引擎侧 adb connect/shell 使用；端口为 localhost 信息，不入审计）
+    // 配对Success → 记录端口（Connect Port仅供引擎侧 adb connect/shell 使用；端口为 localhost 信息，不入审计）
     prefs(context).edit()
       .putBoolean(KEY_PAIRED, true)
       .putString(KEY_PAIR_PORT, pairPort.toString())
       .putString(KEY_CONNECT_PORT, connectPort.toString())
       .putBoolean(KEY_CONNECTED, false)
       .apply()
-    // 立即连接探活（尽力；失败不撤销配对——可能只是连接端口抄错/无线调试短暂抖动）。
-    // 候选端口逐一 connect：NSD/手填连接端口 + 经典 5555 兜底（2026-08-27 实锤：
-    // vivo 无线调试连接端口=5555，NSD 结果可能缺席或与弹窗不一致）。
+    // 立即连接探活（尽力；Failed不撤销配对——可能只是Connect Port抄错/无线调试短暂抖动）。
+    // 候选端口逐一 connect：NSD/手填Connect Port + 经典 5555 兜底（2026-08-27 实锤：
+    // vivo 无线调试Connect Port=5555，NSD 结果可能缺席或与弹窗不一致）。
     var online = false
     for (port in listOf(connectPort) + listOfNotNull(5555.takeIf { it != connectPort })) {
       val connOut = retryRunAdb(engine, listOf("connect", "127.0.0.1:$port"), 25)
@@ -262,18 +262,18 @@ object AdbState {
     prefs(context).edit().putBoolean(KEY_CONNECTED, online).apply()
     AdbAudit.log(context, "adb-pair", mapOf("codeLength" to code.length, "pairPort" to pairPort, "connected" to online))
     return if (online) PairResult(true, true, null, "paired")
-    else PairResult(true, true, "已配对成功；连接探活待确认（「连接端口」可能抄错，引擎侧执行时自动重连）", "paired-connect-unconfirmed")
+    else PairResult(true, true, "Paired successfully; verifying connection (engine will reconnect automatically)", "paired-connect-unconfirmed")
   }
 
   /**
-   * 失败归因（F3）：从 adb 输出全文提取机器可读 reason，前端据此分流文案。
+   * Failed归因（F3）：从 adb 输出全文提取机器可读 reason，前端据此分流文案。
    * 顺序敏感：refused 必须先于 timeout（拨号拒绝是窗口关闭的铁证）；
-   * server 启动失败文案与 protocol fault 同现时优先前者（根因在启动而非传输）。
+   * Server failed to start文案与 protocol fault 同现时优先前者（根因在启动而非传输）。
    */
   private fun classifyFailure(text: String): String {
     val t = text.lowercase()
     return when {
-      t.contains("not found in snapshot") || t.contains("server 启动失败") || t.contains("server 启动异常") || t.contains("尚未就绪") -> "server-not-ready"
+      t.contains("not found in snapshot") || t.contains("Server failed to start") || t.contains("Server startup error") || t.contains("Not ready yet") -> "server-not-ready"
       t.contains("connection refused") || t.contains("failed to connect") || t.contains("cannot connect") -> "window-closed"
       t.contains("timeout") || t.contains("timed out") -> "handshake-timeout"
       t.contains("protocol fault") -> "protocol-fault"
@@ -282,7 +282,7 @@ object AdbState {
     }
   }
 
-  /** 显式回收配对：断开连接 + 删除本地密钥 + paired=false（真实握手下"重启需重新配对"的立即版）。 */
+  /** 显式回收配对：断开连接 + 删除本地密钥 + paired=false（真实握手下"Re-pairing required after reboot"的立即版）。 */
   fun revokePair(context: Context, engine: EngineManager) {
     runAdb(engine, listOf("disconnect"), 15)
     try {
@@ -312,12 +312,12 @@ object AdbState {
 
   /**
    * ADB shell 执行原语（真实通道，0.14）：授权满足时经 adbd（shell uid=2000）执行。
-   * 失败关闭：未授权 / adb 缺失 / 连接未建立一律返回引导 JSON，绝不静默降级。
+   * Failed关闭：未授权 / adb 缺失 / 连接未建立一律返回引导 JSON，绝不静默降级。
    * 命令黑名单与引擎侧 bridge 工具同策略（looksDangerous）；此处仅兜底拒绝 root 型破坏面。
    *
    * requireFullAccess=false 为 **API 29 SAF 方案 B 专用门**（docs/ANDROID10-SAF-ROUTING.md
    * 审查 P1 修复）：fullAccess（All Files Access）是 API 30+ 概念，Android 10 上恒 false
-   * 会把方案 B 自锁死。SAF 路由解锁走通道级门（ADB 可用 + 连接端口在场 + 应用内允许
+   * 会把方案 B 自锁死。SAF 路由解锁走通道级门（ADB 可用 + Connect Port在场 + 应用内允许
    * 访问开关仍需满足）——用户同意层 = SAF 文件夹授权 + 本机 adbd RSA 弹窗，原理上
    * 不依赖 API 30 权限模型。
    */
@@ -326,24 +326,24 @@ object AdbState {
       if (!authorized(context)) {
         return JSONObject()
           .put("ok", false)
-          .put("guidance", "未授权：请完成授权（完全访问档位 → 允许访问开关 → 配对码）后再调用 ADB 通道")
+          .put("guidance", "Unauthorized: please complete authorization (Full Access -> Allow switch -> Pairing code)")
           .toString()
       }
     } else if (!allowSwitch(context)) {
       return JSONObject()
         .put("ok", false)
-        .put("guidance", "未授权：请在应用内开启「允许访问」开关后重试（Android 10 SAF 存储解锁通道）")
+        .put("guidance", "Unauthorized: please enable Allow Access in app")
         .toString()
     }
     val adb = adbBin(context)
     val port = connectPort(context)
     if (adb == null) return JSONObject()
       .put("ok", false)
-      .put("guidance", "ADB 客户端未就绪（快照缺少 android-tools/adb）")
+      .put("guidance", "ADB client not ready (snapshot missing android-tools/adb)")
       .toString()
     if (port.isNullOrBlank()) return JSONObject()
       .put("ok", false)
-      .put("guidance", "缺少连接端口（请重新配对）")
+      .put("guidance", "Missing connect port (please pair again)")
       .toString()
     // 幂等重连（adb connect 对已连接状态安全）+ 执行
     runAdb(engine, listOf("connect", "127.0.0.1:$port"), 20)
@@ -356,7 +356,7 @@ object AdbState {
       prefs(context).edit().putBoolean(KEY_CONNECTED, false).apply()
       return JSONObject()
         .put("ok", false)
-        .put("guidance", "ADB 连接不可用：请确认手机「开发者选项 → 无线调试」仍开启，必要时重新配对")
+        .put("guidance", "ADB unavailable: ensure Wireless Debugging is on in Developer Options")
         .put("stderr", text.take(2048))
         .toString()
     }
@@ -370,19 +370,19 @@ object AdbState {
   /**
    * 0.13.5 W4：Android 13+ 侧载应用默认禁止开启无障碍（restricted settings）。
    * 用自带 ADB 通道一键解锁：`appops set <pkg> ACCESS_RESTRICTED_SETTINGS allow`。
-   * 与其它 ADB 动作同一道门（完全访问 + 允许访问开关 + 已配对）；失败关闭。
+   * 与其它 ADB 动作同一道门（完全访问 + 允许访问开关 + 已配对）；Failed关闭。
    */
   fun unlockRestrictedSettings(context: Context, engine: EngineManager): String {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
       return JSONObject()
         .put("ok", true)
-        .put("message", "Android 13 以下没有受限设置限制——直接到系统设置 → 无障碍开启「DSH 设备控制」即可")
+        .put("message", "Android < 13 has no restricted settings limit: enable DSH Device Control in Accessibility Settings")
         .toString()
     }
     if (!authorized(context)) {
       return JSONObject()
         .put("ok", false)
-        .put("message", "需要先完成 ADB 授权（完全访问 → 允许访问开关 → 配对）才能一键解锁受限设置")
+        .put("message", "Requires ADB authorization first to unlock restricted settings")
         .toString()
     }
     val pkg = context.packageName
@@ -402,8 +402,8 @@ object AdbState {
       .put("ok", ok)
       .put(
         "message",
-        if (ok) "已解锁受限设置——请到系统设置 → 无障碍 → 已下载的服务，开启「DSH 设备控制」"
-        else json.optString("guidance", "解锁失败（可稍后重试，或在系统设置里手动允许）"),
+        if (ok) "Restricted settings unlocked: enable DSH Device Control in Accessibility Settings"
+        else json.optString("guidance", "Unlock failed: retry later or allow manually in system settings"),
       )
       .toString()
   }
@@ -416,10 +416,10 @@ object AdbState {
     val conn = connected(context)
     val authorized = full && allow && pair
     val message = when {
-      authorized && !conn -> "已授权（已配对）——连接待建立：引擎侧执行时将自动重连；仍失败请重新配对"
-      !full -> "未授权：未处于完全访问档位（自动审批模式不构成开放条件）；请先在设置中授予「所有文件访问」"
-      !allow -> "未授权：应用内「允许访问」开关未开启（开发者选项→安全）"
-      else -> "未授权：未配对——请在开发者选项开启「无线调试」，并输入系统弹窗中的 6 位配对码与端口（重启后需重新配对）"
+      authorized && !conn -> "Authorized (paired) - connection pending; will reconnect automatically"
+      !full -> "Unauthorized: Full Access required, please grant All Files Access"
+      !allow -> "Unauthorized: Allow Access switch disabled"
+      else -> "Unauthorized: Not paired. Enable Wireless Debugging and enter pairing code"
     }
     return JSONObject()
       .put("tier", if (authorized && conn) "T1" else if (authorized) "T1-connecting" else "T0")
@@ -471,7 +471,7 @@ object AdbState {
     synchronized(this) {
       if (!prewarmDue()) return
       lastPrewarmAt = now()
-      // 就绪判定在 ensureAdbServer 内部（含 ping）；预热失败不打扰用户，留痕在 adb-server.log
+      // 就绪判定在 ensureAdbServer 内部（含 ping）；预热Failed不打扰用户，留痕在 adb-server.log
       ensureAdbServer(engine)
     }
   }
@@ -485,12 +485,12 @@ object AdbState {
    *  F2（2026-08-27 实锤）：5037 bind ≠ 能应答——server 冷启动完成前，真实客户端第一发必吃
    *  protocol fault 并触发自愈重建，白白烧掉配对码窗口。因此放行条件收紧为一次真实
    *  `devices` 往返通过（服务端早于 client 就绪的场景亦被覆盖：复用孤儿监听时同样补验）。
-   *  @return null=就绪；非 null=错误文本（短路调用方）。
+   *  @return null=就绪；非 null=Error文本（短路调用方）。
    */
   private fun ensureAdbServer(engine: EngineManager): String? = synchronized(this) {
     if (adbServerUp()) {
       if (!serverReady) {
-        if (!adbPing(engine)) return@synchronized "adb server 未就绪（ping 未通过）"
+        if (!adbPing(engine)) return@synchronized "ADB server not ready (ping failed)"
         serverReady = true
       }
       // 己方常驻进程若已死亡但 socket 仍被占（新进程接管/孤儿）：保留 null，ready 已由 ping 背书
@@ -508,13 +508,13 @@ object AdbState {
       serverProcess = proc
       val deadline = now() + 3000
       while (now() < deadline && proc.isAlive && !adbServerUp()) Thread.sleep(100)
-      if (!adbServerUp()) return@synchronized "adb server 启动失败（详见 files/home/adb-server.log）"
-      if (!adbPing(engine)) return@synchronized "adb server 刚启动尚未就绪（请数秒后重试）"
+      if (!adbServerUp()) return@synchronized "ADB server failed to start (check files/home/adb-server.log)"
+      if (!adbPing(engine)) return@synchronized "ADB server just started (please retry in seconds)"
       serverReady = true
       null
     } catch (t: Throwable) {
       serverReady = false
-      "adb server 启动异常: " + (t.message ?: t.javaClass.simpleName)
+      "adb Server startup error: " + (t.message ?: t.javaClass.simpleName)
     }
   }
 
@@ -622,7 +622,7 @@ object AdbAudit {
         .put("result", "ok")
       f.appendText(entry.toString() + "\n")
     } catch (_: Throwable) {
-      /* 审计失败不阻断授权（隐私优先，静默放弃） */
+      /* 审计Failed不阻断授权（隐私优先，静默放弃） */
     }
   }
 }

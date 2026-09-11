@@ -7,7 +7,7 @@ import java.io.File
 /**
  * 崩溃自动回退（PRD F3 / D6 方案 a）：壳侧「undo 全自动」闸门。
  *
- * 职责：当引擎反复启动失败（看门狗连续失败达到阈值）或引擎日志出现崩溃签名时，
+ * 职责：当引擎反复启动Failed（看门狗连续Failed达到阈值）或引擎日志出现崩溃签名时，
  * 自动执行 dsh-undo-emergency 急救 CLI 的 restore-last-good（把配置/插件代码树
  * 回滚到 boot-state.json 归因出的「最后良好快照」），并恢复引擎。
  *
@@ -26,7 +26,7 @@ object UndoGate {
   private const val TAG = "dsh-undo"
   private val autoUndoRunning = java.util.concurrent.atomic.AtomicBoolean(false)
 
-  /** 看门狗连续失败触发阈值（与 WatchdogV2.MAX_CONSEC_FAILURES 对齐但更保守：熔断即触发）。 */
+  /** 看门狗连续Failed触发阈值（与 WatchdogV2.MAX_CONSEC_FAILURES 对齐但更保守：熔断即触发）。 */
   const val TRIGGER_CONSEC_FAILURES = 6
 
   /** 触发后到执行的静默期：留给引擎自己恢复的最后机会（正常慢启动上限 45s+）。 */
@@ -104,7 +104,7 @@ object UndoGate {
     }
   }
 
-  /** 从 CLI 输出提取恢复目标快照 id；解析失败返回 null（不阻断）。 */
+  /** 从 CLI 输出提取恢复目标快照 id；解析Failed返回 null（不阻断）。 */
   private fun restoreTarget(lines: List<String>): String? {
     val m = lines.firstOrNull { it.contains("恢复快照") }?.let { line ->
       Regex("恢复快照 (\\S+)").find(line)

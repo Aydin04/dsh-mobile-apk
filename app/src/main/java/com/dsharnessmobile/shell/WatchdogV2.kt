@@ -14,10 +14,10 @@ import java.io.File
  * 看门狗升级（0.13.0 PRD F2/M3.4）：
  * - 深度探活：HTTP 状态码 + 页面心跳 + 插件状态（EngineProbe 扩展：/api/android/privilege/status
  *   可达表示插件树健康）+ 引擎日志尾部异常扫描（engine.log 末尾 fatal/Error 关键字）。
- * - 熔断与指数退避：连续失败 → 指数退避（5s→10s→20s→40s→80s 封顶），超过熔断阈值（12 次连续失败）
- *   暂停看门狗并记录（界面提示由 GuideChrome 状态区显示），用户交互或探活成功自动复位。
+ * - 熔断与指数退避：连续Failed → 指数退避（5s→10s→20s→40s→80s 封顶），超过熔断阈值（12 次连续Failed）
+ *   暂停看门狗并记录（界面Notice由 GuideChrome 状态区显示），用户交互或探活Success自动复位。
  * - 开机自启：BOOT_COMPLETED 接收器恢复用户上次同意的运行状态（EngineService.userShutdown 持久化）。
- * - 前台唤醒锁：引擎前台运行期间持有（PARTIAL_WAKE_LOCK，标准档位；获取失败降级尽力模式并记录）。
+ * - 前台唤醒锁：引擎前台运行期间持有（PARTIAL_WAKE_LOCK，标准档位；获取Failed降级尽力模式并记录）。
  * - 授权状态探活：ADB 配对断线时记录（F2.9，桥引导重新配对由桥层返回）。
  */
 object WatchdogV2 {
@@ -123,7 +123,7 @@ object WatchdogV2 {
     }
   }
 
-  /** 前台唤醒锁（标准档位；获取失败降级尽力模式并记录审计日志）。 */
+  /** 前台唤醒锁（标准档位；获取Failed降级尽力模式并记录审计日志）。 */
   private var wakeLock: PowerManager.WakeLock? = null
 
   fun acquireWakeLock(context: Context) {

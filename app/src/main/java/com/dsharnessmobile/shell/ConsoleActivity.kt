@@ -49,7 +49,7 @@ class ConsoleActivity : ComponentActivity() {
     }
 
     override fun onExit(code: Int) {
-      lastStatus = "bash 已退出（code $code）"
+      lastStatus = "bash exited (code $code)"
       handler.post { pushStatus(lastStatus!!) }
     }
   }

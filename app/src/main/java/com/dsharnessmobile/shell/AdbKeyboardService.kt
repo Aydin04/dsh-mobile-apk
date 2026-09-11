@@ -56,7 +56,7 @@ class AdbKeyboardService : InputMethodService() {
     super.onDestroy()
   }
 
-  /** 提交文本到当前输入连接（replace 语义，与 ADBKeyboard 默认一致）。幂等失败。 */
+  /** 提交文本到当前输入连接（replace 语义，与 ADBKeyboard 默认一致）。幂等Failed。 */
   internal fun commitText(text: String) {
     val conn = currentInputConnection ?: return
     if (!conn.beginBatchEdit()) return

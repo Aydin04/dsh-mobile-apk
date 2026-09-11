@@ -39,7 +39,7 @@ internal class ConfigTransfer(private val homeDir: File, private val dshDataDir:
       """{"ok":true,"path":"${dst.absolutePath.replace("\\", "\\\\")}"}"""
     } catch (t: Throwable) {
       Log.w("dsh-shell", "config export failed", t)
-      """{"ok":false,"error":"${(t.message ?: "导出失败").replace("\"", "'")}"}"""
+      """{"ok":false,"error":"${(t.message ?: "Export Failed").replace("\"", "'")}"}"""
     }
   }
 
@@ -61,14 +61,14 @@ internal class ConfigTransfer(private val homeDir: File, private val dshDataDir:
       """{"ok":true,"path":"${dst.absolutePath.replace("\\", "\\\\")}","hint":"引擎会热加载；若未生效请开发者选项里重启引擎"}"""
     } catch (t: Throwable) {
       Log.w("dsh-shell", "config import failed", t)
-      """{"ok":false,"error":"${(t.message ?: "导入失败").replace("\"", "'")}"}"""
+      """{"ok":false,"error":"${(t.message ?: "导入Failed").replace("\"", "'")}"}"""
     }
   }
 }
 
 /**
  * SAF 目录选择控制器（带 All Files Access 引导；自 MainActivity 拆出）：
- * 外部工作区要求 bash 进程能直接访问所选真实路径；无权限时先跳系统授权页并提示页面侧重试。
+ * 外部工作区要求 bash 进程能直接访问所选真实路径；无权限时先跳系统授权页并Notice页面侧重试。
  *
  * #120（2026-09）+ SAF 路由修订（2026-09-05，docs/ANDROID10-SAF-ROUTING.md）：
  * - SDK 26-28（无分区存储）：运行时 READ/WRITE 授权后走 SAF（真实路径直接可用）；
@@ -121,7 +121,7 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
             "window.__dshBridge?.onDirectoryPicked?.(" + jsString(callback) + ", " + jsString(path) + ")", null,
           )
         } else {
-          // 用户取消：回传 null，让引擎侧 pick() 以取消结算（否则页面轮询
+          // 用户Cancel：回传 null，让引擎侧 pick() 以Cancel结算（否则页面轮询
           // 会继续拿到同一请求反复唤起选择器——设备实证的 picker 堆叠）。
           activity.webView.evaluateJavascript(
             "window.__dshBridge?.onDirectoryPicked?.(" + jsString(callback) + ", null)", null,
@@ -131,7 +131,7 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
     }
 
   /** H2：壳侧 pick 占槽 TTL（与引擎侧 5 分钟 TTL 对齐）——SAF 结果永远
-   *  不回来（系统设置页停留/进程被杀恢复/缺权限路径）时自动清槽并按取消
+   *  不回来（系统设置页停留/进程被杀恢复/缺权限路径）时自动清槽并按Cancel
    *  结算，避免后续目录选择被单槽永久拒绝。 */
   private val pickTtlHandler = android.os.Handler(android.os.Looper.getMainLooper())
   private val pickTtlRunnable = Runnable {
@@ -149,7 +149,7 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
   }
 
   /** #120（2026-09）：SDK 26-28 外部工作区放行——运行时 READ/WRITE 授权后走 SAF。
-   *  拒绝授权则回传显式拒绝哨兵（不再静默当取消），由引擎侧转错误对话框。 */
+   *  拒绝授权则回传显式拒绝哨兵（不再静默当Cancel），由引擎侧转Error对话框。 */
   private val storagePermLauncher =
     activity.registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
       pickTtlHandler.removeCallbacks(pickTtlRunnable)
@@ -159,13 +159,13 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
       if (callback == null) return@registerForActivityResult
       val granted = !grants.values.contains(false)
       if (granted) {
-        // 授权成功：占槽 + 起 SAF 树选择器（外部工作区=真实路径）。
+        // 授权Success：占槽 + 起 SAF 树选择器（外部工作区=真实路径）。
         pendingPickCallback = callback
         pickTtlHandler.removeCallbacks(pickTtlRunnable)
         pickTtlHandler.postDelayed(pickTtlRunnable, 5 * 60_000L)
         directoryPicker.launch(null)
       } else {
-        // 用户拒绝存储权限：显式拒绝（reason=permission-denied），不再静默取消。
+        // 用户拒绝Storage Permission：显式拒绝（reason=permission-denied），不再静默Cancel。
         activity.webView.evaluateJavascript(
           "window.__dshBridge?.onDirectoryPicked?.(" + jsString(callback) + ", " +
             jsString(MainActivity.PICK_REFUSED_PREFIX + "permission-denied") + ")", null,
@@ -235,7 +235,7 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
       return
     }
     // M3：未授权路径也占槽 + 记挂起标记——onResume 据此在授权返回后自动
-    // 续启 SAF（或仍拒绝时按取消结算），引擎请求不再静默挂到 5 分钟 TTL。
+    // 续启 SAF（或仍拒绝时按Cancel结算），引擎请求不再静默挂到 5 分钟 TTL。
     pendingPickCallback = callbackId
     pendingPermissionRequest = true
     pickTtlHandler.removeCallbacks(pickTtlRunnable)
@@ -259,13 +259,13 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
       try {
         activity.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
       } catch (_: Exception) {
-        // 无任何可用入口：静默忽略（引擎侧会以取消结算）。
+        // 无任何可用入口：静默忽略（引擎侧会以Cancel结算）。
       }
     }
   }
 
   /** M3：从系统授权页返回——上次 pick 因缺权限挂起时，已授权则自动续启
-   *  SAF，仍拒绝则按取消结算（引擎请求不挂到 5 分钟 TTL）。
+   *  SAF，仍拒绝则按Cancel结算（引擎请求不挂到 5 分钟 TTL）。
    *  （自 MainActivity.onResume 迁入。） */
   fun settlePendingOnResume() {
     if (pendingPickCallback != null) {

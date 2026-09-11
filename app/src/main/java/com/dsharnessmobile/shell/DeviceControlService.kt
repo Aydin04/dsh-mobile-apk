@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * 安全边界：
  *  - 只服务本应用引擎（127.0.0.1:3080）的请求，且请求必须带共享令牌；
- *  - 动作按**路径回指**（不是持久节点引用）：路径失效即失败关闭，绝不猜测性点击；
+ *  - 动作按**路径回指**（不是持久节点引用）：路径失效即Failed关闭，绝不猜测性点击；
  *  - 不做账号接管/验证码/支付；不隐藏自动化信号。
  */
 class DeviceControlService : AccessibilityService() {
@@ -214,13 +214,13 @@ class DeviceControlService : AccessibilityService() {
       val restricted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
       return JSONObject()
         .put("enabled", enabled)
-        .put("label", "DSH 设备控制")
+        .put("label", "DSH Device Control")
         .put("sdk", Build.VERSION.SDK_INT)
         .put("restrictedSettingsApplies", restricted)
         .put(
           "hint",
-          if (enabled) "无障碍服务已开启：设备控制走无障碍通道（语义树 + performAction）"
-          else "未开启：到 系统设置 → 无障碍 → 已下载的服务 里开启「DSH 设备控制」",
+          if (enabled) "Accessibility service enabled: semantic tree + performAction"
+          else "未开启：到 系统设置 → 无障碍 → 已下载的服务 里开启「DSH Device Control」",
         )
         .put("tokenConfigured", !context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_TOKEN, null).isNullOrEmpty())
         .toString()
@@ -228,7 +228,7 @@ class DeviceControlService : AccessibilityService() {
 
     /**
      * 控制队列共享令牌（壳生成一次、持久化到 dsh-adb.xml；引擎插件 live 读）。
-     * 只在服务连接后可见——未开启无障碍时引擎侧拿不到令牌，控制路由自然失败关闭。
+     * 只在服务连接后可见——未开启无障碍时引擎侧拿不到令牌，控制路由自然Failed关闭。
      */
     fun token(context: Context): String {
       val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -401,7 +401,7 @@ class DeviceControlService : AccessibilityService() {
 
   // ── 动作 ──────────────────────────────────────────────────────────────
 
-  /** 执行一个队列请求；返回 null 表示成功（数据由调用方组装）。 */
+  /** 执行一个队列请求；返回 null 表示Success（数据由调用方组装）。 */
   fun handle(op: String, args: JSONObject): JSONObject {
     return when (op) {
       "snapshot" -> handleSnapshot()
@@ -414,7 +414,7 @@ class DeviceControlService : AccessibilityService() {
       "nodeText" -> handleNodeText(args)
       "webSnapshot" -> handleWebSnapshot(args)
       "webAction" -> handleWebAction(args)
-      else -> error("未知操作 $op")
+      else -> error("Unknown operation $op")
     }
   }
 
@@ -425,7 +425,7 @@ class DeviceControlService : AccessibilityService() {
    */
   private fun handleScreenshot(args: JSONObject): JSONObject {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-      return error("无障碍截屏需要 Android 11（API 30）及以上；本机 API ${Build.VERSION.SDK_INT}——请改用 ADB 通道（screencap）")
+      return error("Accessibility screenshot requires Android 11+ (API 30+)")
     }
     // 一次性迁移（issue #127）：≤0.13.5 把截图落在 files/control-shots（引擎读不到），
     // 升级后清掉旧目录，避免历史残留长期占位。
@@ -441,7 +441,7 @@ class DeviceControlService : AccessibilityService() {
         try {
           val bitmap = android.graphics.Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
           if (bitmap == null) {
-            payload = error("截屏位图解码为空")
+            payload = error("Screenshot bitmap decoded as null")
           } else {
             // 落引擎可读目录（EngineManager 把 TMPDIR 设为 files/home/tmp，管理插件
             // 的 dsh-tmp 同源）——此前落在 files/control-shots，引擎 read_image 打不开
@@ -458,7 +458,7 @@ class DeviceControlService : AccessibilityService() {
             payload = JSONObject().put("path", file.absolutePath).put("width", width).put("height", height)
           }
         } catch (t: Throwable) {
-          payload = error("截屏处理失败：" + (t.message ?: t.javaClass.simpleName))
+          payload = error("Screenshot processing failed: " + (t.message ?: t.javaClass.simpleName))
         } finally {
           try { screenshot.hardwareBuffer.close() } catch (_: Throwable) { /* 忽略 */ }
           latch.countDown()
@@ -467,14 +467,14 @@ class DeviceControlService : AccessibilityService() {
 
       override fun onFailure(errorCode: Int) {
         val hint = when (errorCode) {
-          ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "内部错误"
-          ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "无障碍访问未就绪"
-          ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "调用过频（需间隔约 333ms）"
-          ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "无效的显示 id"
+          ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "Internal error"
+          ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "Accessibility access not ready"
+          ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "Rate limit exceeded (min interval ~333ms)"
+          ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "Invalid display id"
           ERROR_TAKE_SCREENSHOT_SECURE_WINDOW -> "当前窗口禁止截屏（FLAG_SECURE）"
-          else -> "错误码 $errorCode"
+          else -> "Error码 $errorCode"
         }
-        payload = error("截屏失败：$hint")
+        payload = error("截屏Failed：$hint")
         latch.countDown()
       }
     })
@@ -547,14 +547,14 @@ class DeviceControlService : AccessibilityService() {
     if (!latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
       return error("WebView DOM 求值超时（${timeoutMs}ms）")
     }
-    val raw = holder[0] ?: return error("WebView DOM 求值失败（页面可能正在跳转）")
+    val raw = holder[0] ?: return error("WebView DOM 求值Failed（页面可能正在跳转）")
     val json = if (raw.startsWith("\"")) {
       try { org.json.JSONTokener(raw).nextValue() as? String } catch (_: Throwable) { null }
     } else {
       raw
     }
     if (json.isNullOrBlank()) return error("WebView DOM 求值返回空")
-    return try { JSONObject(json) } catch (t: Throwable) { error("WebView DOM 结果解析失败：" + (t.message ?: "?")) }
+    return try { JSONObject(json) } catch (t: Throwable) { error("WebView DOM 结果解析Failed：" + (t.message ?: "?")) }
   }
 
   private fun error(message: String): JSONObject = JSONObject().put("__error", message)
@@ -590,7 +590,7 @@ class DeviceControlService : AccessibilityService() {
       .put("nodes", nodes)
   }
 
-  /** 校验 gen（页面已变化时失败关闭）并返回目标节点。 */
+  /** 校验 gen（页面已变化时Failed关闭）并返回目标节点。 */
   private fun requireFresh(args: JSONObject): JSONObject? {
     val requested = if (args.has("gen")) args.optInt("gen", -1) else -1
     if (requested >= 0) {
@@ -645,11 +645,11 @@ class DeviceControlService : AccessibilityService() {
       override fun onCompleted(description: GestureDescription?) { ok = true; latch.countDown() }
       override fun onCancelled(description: GestureDescription?) { latch.countDown() }
     }, null)
-    if (!dispatched) return error("手势派发失败（无障碍服务未就绪）")
+    if (!dispatched) return error("手势派发Failed（无障碍服务未就绪）")
     latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
     return if (ok) JSONObject().put("clicked", "($x,$y)").put("via", via)
       .put("x", x.toDouble()).put("y", y.toDouble())
-    else error("手势点击未完成（被系统取消）")
+    else error("手势点击未完成（被系统Cancel）")
   }
 
   /**
@@ -777,7 +777,7 @@ class DeviceControlService : AccessibilityService() {
       override fun onCompleted(description: GestureDescription?) { ok = true; latch.countDown() }
       override fun onCancelled(description: GestureDescription?) { latch.countDown() }
     }, null)
-    if (!dispatched) return error("滚动手势派发失败")
+    if (!dispatched) return error("滚动手势派发Failed")
     latch.await(4, java.util.concurrent.TimeUnit.SECONDS)
     return if (ok) JSONObject().put("scrolled", direction).put("via", "gesture").put("fraction", fraction)
     else error("滚动手势未完成")

@@ -104,7 +104,7 @@ class ConsoleSession(private val context: Context) {
       true
     } catch (t: Throwable) {
       LogCollector.log(TAG, "console start FAILED: " + (t.message ?: t.javaClass.simpleName))
-      listener.onStatus("控制台启动失败：" + (t.message ?: t.javaClass.simpleName))
+      listener.onStatus("控制台启动Failed：" + (t.message ?: t.javaClass.simpleName))
       false
     }
   }

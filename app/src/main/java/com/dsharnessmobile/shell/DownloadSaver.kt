@@ -46,7 +46,7 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
   /** 下载 in-flight 守卫：shouldOverrideUrlLoading 与 downloadListener 双入口去重。 */
   private val exportDownloading = java.util.concurrent.atomic.AtomicBoolean(false)
 
-  /** 原子防重放的外部浏览器打开（非导出外链）。尽力而为：启动失败时
+  /** 原子防重放的外部浏览器打开（非导出外链）。尽力而为：启动Failed时
    *  静默（调用方不读返回值），不再有 MediaStore 回退契约——回退仅
    *  存在于导出路径（downloadToDownloads 内）。 */
   private val exportLaunching = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -54,7 +54,7 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
   /** 导出结果回传 WebView：UI 插件经 window.__dshExportResult 弹软件内结果框。
    *  （自 MainActivity 迁入；调试日志导出复用同一弹窗通道。） */
   internal fun pushExportResult(ok: Boolean, detail: String) {
-    val title = if (ok) "导出成功" else "导出失败"
+    val title = if (ok) "Export Successful" else "Export Failed"
     val payload = "{\"ok\":" + ok + ",\"title\":" + jsString(title) + ",\"detail\":" + jsString(detail) + "}"
     activity.webView.post {
       activity.webView.evaluateJavascript(
@@ -72,14 +72,14 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
    */
   fun downloadToDownloads(url: String, contentDisposition: String?) {
     if (!isEngineSource(url)) {
-      activity.showTestNotification("下载被拒绝", "仅支持从本机引擎导出文件")
-      pushExportResult(false, "仅支持从本机引擎导出文件")
+      activity.showTestNotification("Download Rejected", "Only local engine export supported")
+      pushExportResult(false, "Only local engine export supported")
       return
     }
     if (!exportDownloading.compareAndSet(false, true)) return
     if (Build.VERSION.SDK_INT < 29) {
-      activity.showTestNotification("导出失败", "当前系统版本不支持下载，请升级到 Android 10+")
-      pushExportResult(false, "当前系统版本不支持下载，请升级到 Android 10+")
+      activity.showTestNotification("Export Failed", "Android 10+ required for download")
+      pushExportResult(false, "Android 10+ required for download")
       exportDownloading.set(false)
       return
     }
@@ -120,13 +120,13 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
         }
         val finalPath = saved
         activity.runOnUiThread {
-          activity.showTestNotification("会话日志已导出", "已保存到 $finalPath")
-          pushExportResult(true, "已保存到 $finalPath")
+          activity.showTestNotification("Session log exported", "Saved to $finalPath")
+          pushExportResult(true, "Saved to $finalPath")
         }
       } catch (t: Throwable) {
-        val message = t.message ?: "未知错误"
+        val message = t.message ?: "Unknown error"
         activity.runOnUiThread {
-          activity.showTestNotification("导出失败", message)
+          activity.showTestNotification("Export Failed", message)
           pushExportResult(false, message)
         }
       } finally {
@@ -169,7 +169,7 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
             val n = input.read(buf)
             if (n < 0) break
             total += n
-            if (total > MAX_DOWNLOAD_BYTES) throw java.io.IOException("导出文件过大")
+            if (total > MAX_DOWNLOAD_BYTES) throw java.io.IOException("Export file too large")
             out.write(buf, 0, n)
           }
         }
@@ -180,10 +180,10 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
         tmp.delete()
         throw t
       }
-      return "文档/dshdata/exports/" + target.name
+      return "Documents/dshdata/exports/" + target.name
     }
     val savedName = saveToDownloadsStreamed(filename, input)
-    return "下载/$savedName"
+    return "Download/$savedName"
   }
 
   /** 同名冲突加 (1) 后缀。 */
@@ -209,7 +209,7 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
       put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
     }
     val uri = activity.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-      ?: throw java.io.IOException("无法创建下载文件")
+      ?: throw java.io.IOException("Cannot create download file")
     try {
       activity.contentResolver.openOutputStream(uri)?.use { out ->
         val buf = ByteArray(64 * 1024)
@@ -218,10 +218,10 @@ internal class DownloadSaver(private val activity: MainActivity, private val dsh
           val n = input.read(buf)
           if (n < 0) break
           total += n
-          if (total > MAX_DOWNLOAD_BYTES) throw java.io.IOException("导出文件过大")
+          if (total > MAX_DOWNLOAD_BYTES) throw java.io.IOException("Export file too large")
           out.write(buf, 0, n)
         }
-      } ?: throw java.io.IOException("无法写入下载文件")
+      } ?: throw java.io.IOException("Cannot write to download file")
       values.clear()
       values.put(MediaStore.Downloads.IS_PENDING, 0)
       activity.contentResolver.update(uri, values, null, null)

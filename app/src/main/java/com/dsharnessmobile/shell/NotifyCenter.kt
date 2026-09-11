@@ -12,7 +12,7 @@ import androidx.core.app.NotificationCompat
 /**
  * 项目进度通知中心（0.13.0 F0.3）：引擎事件桥 → 系统通知栏推送。
  * - 三类渠道：task（任务完成）/ todo（待办更新）/ auth（授权请求，明示含描述）
- * - 按类开关（默认开；授权请求类明示内容敏感性）；通知权限未授予时静默降级（界面内提示由调用方负责）
+ * - 按类开关（默认开；授权请求类明示内容敏感性）；通知权限未授予时静默降级（界面内Notice由调用方负责）
  * - 高频更新节流合并：同类短窗口（2s）内多次更新合并为一条摘要（更新文本 + 计数）
  * - 点击返回：带 target 摘录回 MainActivity（会话/设置定位由引擎侧路由，本层只回应用）
  * - 不涉及任何授权档位（常规通知权限，PRD F0.3-5）
@@ -55,7 +55,7 @@ object NotifyCenter {
       android.content.pm.PackageManager.PERMISSION_GRANTED
     ) {
       LogCollector.log("dsh-notify", "notify skipped (POST_NOTIFICATIONS not granted): $category")
-      return // 未授予：静默降级（调用方界面内提示；不崩溃）
+      return // 未授予：静默降级（调用方界面内Notice；不崩溃）
     }
     val manager = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     val channelId = channelIds[category] ?: channelIds["task"]!!

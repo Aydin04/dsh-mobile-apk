@@ -114,7 +114,7 @@ internal class WebUiChrome(private val activity: MainActivity) {
     }
   }
 
-  /** M7：主题延迟重推 Runnable 引用（onDestroy 取消用）。 */
+  /** M7：主题延迟重推 Runnable 引用（onDestroy Cancel用）。 */
   private var themeRetryRunnable: Runnable? = null
 
   /** 系统深色状态推送：某些厂商 WebView 的 prefers-color-scheme 不跟随
@@ -141,7 +141,7 @@ internal class WebUiChrome(private val activity: MainActivity) {
             "window.__dshThemeBridge && window.__dshThemeBridge.setDark(" + dark + ")", null,
           )
         } catch (_: Exception) {
-          // 页面/WebView 已销毁：重推失败无害。
+          // 页面/WebView 已销毁：重推Failed无害。
         }
       }
       themeRetryRunnable = runnable
@@ -151,7 +151,7 @@ internal class WebUiChrome(private val activity: MainActivity) {
     }
   }
 
-  /** onDestroy 取消延迟重推（M7）。 */
+  /** onDestroy Cancel延迟重推（M7）。 */
   fun cancelThemePush(view: WebView) {
     themeRetryRunnable?.let { view.removeCallbacks(it) }
   }

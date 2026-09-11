@@ -65,11 +65,11 @@ class UpdateManager(private val context: Context) {
         deleteRecursively(old)
         if (usr.exists()) usr.renameTo(old)
         if (!newUsr.renameTo(usr)) {
-          // 切换失败：立即回退旧代，不留半更新状态（PRD F3.2 第二层回退语义）。
+          // 切换Failed：立即回退旧代，不留半更新状态（PRD F3.2 第二层回退语义）。
           if (old.exists() && !old.renameTo(usr)) {
             Log.e("dsh-update", "swap failed and rollback failed; old runtime at usr-old: " + old.absolutePath)
           }
-          throw IllegalStateException("切换失败（已回退旧代）")
+          throw IllegalStateException("切换Failed（已回退旧代）")
         }
         deleteRecursively(stage)
         // 更新管理器第二版（PRD F3.2/F1.10）：保留上一版运行时（usr-old），
@@ -92,7 +92,7 @@ class UpdateManager(private val context: Context) {
         }
         onStatus("更新完成，引擎已自动重启")
       } catch (t: Throwable) {
-        onStatus("更新失败：" + (t.message ?: t.javaClass.simpleName))
+        onStatus("Update failed：" + (t.message ?: t.javaClass.simpleName))
       }
     }.start()
   }

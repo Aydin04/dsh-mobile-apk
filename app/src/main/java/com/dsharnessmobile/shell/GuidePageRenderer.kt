@@ -124,7 +124,7 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
     GuidePhase.Recovering -> "看门狗正在拉起引擎，通常几秒内恢复。"
     GuidePhase.Undoing -> "正在把配置/插件回滚到最后良好快照（自动回撤）。"
     GuidePhase.Error -> "可打开控制台查看 engine.log，或点击重试。"
-    GuidePhase.Closed -> "引擎已停止，不会自动恢复。"
+    GuidePhase.Closed -> "Engine stopped，不会自动恢复。"
     GuidePhase.Idle -> "引擎就绪后将进入 DeepCode。"
   }
 
@@ -144,7 +144,7 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
     }
   }
 
-  /** 取消状态点脉冲动画（onDestroy 兜底，自 MainActivity.onDestroy 迁入）。 */
+  /** Cancel状态点脉冲动画（onDestroy 兜底，自 MainActivity.onDestroy 迁入）。 */
   fun cancelPulse() {
     statusPulse?.cancel()
     statusPulse = null
@@ -187,7 +187,7 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
     }
   }
 
-  /** 进入测试界面（引擎失败/未就绪回退）：状态 + 崩溃横幅 + engine.log 摘要。 */
+  /** 进入测试界面（引擎Failed/未就绪回退）：状态 + 崩溃横幅 + engine.log 摘要。 */
   fun showGuide() {
     val becomingVisible = activity.guideView.visibility != View.VISIBLE
     activity.webView.visibility = View.GONE

@@ -67,7 +67,7 @@ class MuxClient(
         backoff = 1000L // 正常收到 close 帧退出 → 快速重连
       } catch (e: Exception) {
         if (!running) return
-        // 失败必须可见（首败 + 每分钟一条节流；引擎冷启动前 refused 是预期噪音）
+        // Failed必须可见（首败 + 每分钟一条节流；引擎冷启动前 refused 是预期噪音）
         Log.w(TAG, "mux attempt failed: ${e.message}")
       }
       if (!running) return
@@ -82,7 +82,7 @@ class MuxClient(
     socket = s
     val key = Base64.encodeToString(ByteArray(16).also { SecureRandom().nextBytes(it) }, Base64.NO_WRAP)
     // W3：upgrade 同过 connection 鉴权栅栏——握手带浏览器 Cookie（现取，重连吃到刷新后的值）。
-    // 雷区 5：不带 Origin/sec-fetch-site（多余的头反而触发 Host 栅栏交叉校验失败）。
+    // 雷区 5：不带 Origin/sec-fetch-site（多余的头反而触发 Host 栅栏交叉校验Failed）。
     val cookie = EngineAuth.attachMux() ?: ""
     val cookieHeader = if (cookie.isNotEmpty()) "Cookie: $cookie\r\n" else ""
     val out = s.getOutputStream()

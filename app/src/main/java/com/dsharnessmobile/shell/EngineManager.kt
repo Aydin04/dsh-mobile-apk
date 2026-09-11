@@ -131,7 +131,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
       restoreLegacyUserData(File(homeDir, ".dsh"))
       // 0.13.5 W1a（issue #126 P1 的兜底诉求）：换树前留一份 settings.yaml 快照。
       // 事务化本身从不触碰用户数据，这份副本是「万一」时的取证/回滚来源——
-      // 只保留最近 3 代，写失败仅告警（不阻断刷新）。
+      // 只保留最近 3 代，写Failed仅告警（不阻断刷新）。
       snapshotSettingsBackup()
 
       onStage("正在完成运行时更新…")
@@ -156,7 +156,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
       return true
     } catch (t: Throwable) {
       Log.e(TAG, "snapshot refresh failed; rolling back", t)
-      onStage("运行时更新失败，正在回滚…")
+      onStage("运行时Update failed，正在回滚…")
       try {
         val marker = SnapshotTransaction.readMarker(filesDir)
         if (marker != null) {
@@ -282,7 +282,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
    *
    * 事务化刷新本身从不移动/覆盖用户数据（[SnapshotTransaction] 跳过 preservedNames），
    * 这份副本回应 issue #126 P1 的诉求：升级出意外时至少有一份「升级前」的配置可取证/回滚。
-   * 写入失败只告警——备份不是刷新的前置条件。
+   * 写入Failed只告警——备份不是刷新的前置条件。
    */
   private fun snapshotSettingsBackup() {
     val source = File(File(homeDir, ".dsh"), "settings.yaml")
@@ -532,7 +532,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
           "    config/settings.yaml   配置导出（设置 > 开发者选项 > 导出配置 生成）\n" +
           "                           修改本文件后点「导入配置」即可生效（无需重装）\n" +
           "  log/                     开发者调试日志（默认关，设置 > 开发者选项 开启）\n" +
-          "  diagnostics/             启动失败/崩溃时自动生成的诊断包（engine.log + 环境信息 + logcat），\n" +
+          "  diagnostics/             启动Failed/崩溃时自动生成的诊断包（engine.log + 环境信息 + logcat），\n" +
           "                           反馈 issue 时直接整目录打包上传即可\n\n" +
           "改配置的正确途径：设置界面各项开关；或 导出配置 -> 文件管理器编辑 -> 导入配置；\n" +
           "进阶：设置 > 开发者选项 > 打开控制台（快照内 bash，可直接 vi settings.yaml）。\n",
@@ -716,7 +716,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
     } catch (t: Throwable) {
       Log.e(TAG, "engine start failed", t)
       LogCollector.log(TAG, "engine start FAILED: " + (t.message ?: t.javaClass.simpleName))
-      // 0.13.1 W3：失败现场镜像到共享目录（此前 engine.log 只在私有域，外界拿不到）。
+      // 0.13.1 W3：Failed现场镜像到共享目录（此前 engine.log 只在私有域，外界拿不到）。
       mirrorDiagnosticsToShared("engine-spawn-failed")
       false
     } finally {
@@ -789,10 +789,10 @@ class EngineManager(private val context: Context, private val pickToken: String?
   }
 
   /**
-   * 0.13.1 W3：失败诊断镜像（best-effort，绝不抛出）。把 engine.log 全世代 + 退出码 +
+   * 0.13.1 W3：Failed诊断镜像（best-effort，绝不抛出）。把 engine.log 全世代 + 退出码 +
    * 环境/设备信息 + 最近 logcat 写入共享目录 Documents/dshdata/diagnostics/<时间戳>-<原因>/，
-   * 用户用文件管理器即可直接复制去反馈（此前全在私有目录，失败时外界拿不到任何现场）。
-   * 触发点：spawn 失败 / 进程死亡 / 健康检查超时 / 快照解压失败 / UndoGate 急救。
+   * 用户用文件管理器即可直接复制去反馈（此前全在私有目录，Failed时外界拿不到任何现场）。
+   * 触发点：spawn Failed / 进程死亡 / 健康检查超时 / 快照Extraction failed / UndoGate 急救。
    */
   fun mirrorDiagnosticsToShared(reason: String) {
     try {
@@ -847,7 +847,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
    * 会被首启持久化；fx-1 只修了 APK 内出厂模板，覆盖安装升级的设备上存量坏配置仍在——
    * 引擎 settings section() 抛 TypeError 且被插件加载器吞掉（engine.log 零痕迹），表现为
    * 模型页提供方列表空白 + 「添加提供方」点击无响应（2026-08-28 模拟器双向复现实锤）。
-   * 启动前把已知坏裸键修复为空对象；幂等、只触碰已知键、失败不阻塞启动。
+   * 启动前把已知坏裸键修复为空对象；幂等、只触碰已知键、Failed不阻塞启动。
    * 判定必须带前瞻：裸键后紧跟缩进子键 = 合法映射（非 null），绝不能改——否则插入重复键
    * DUPLICATE_KEY 直接炸引擎（2026-08-28 首版修复在 fx-1 正常文件上翻车实录）。
    */
@@ -906,7 +906,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
 
   /**
    * 引擎进程存活判定（0.13.0 启动超时 D1 的事实源）：进程句柄活着，或 3080 已可达，
-   * 即视为「引擎还在」（冷启动 20-45s 中轮询窗口内不许宣判失败）。两者皆否才返回 false。
+   * 即视为「引擎还在」（冷启动 20-45s 中轮询窗口内不许宣判Failed）。两者皆否才返回 false。
    * 供 startEngineFlow 的超时语义使用——进程活着就继续等，只有进程死才触发回退。
    */
   fun engineProcessAlive(): Boolean {
@@ -1030,7 +1030,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
         "GIT_SSL_CAINFO" to cert.absolutePath,
         // 快照 node 编译期硬编码 OpenSSL 配置路径 /data/data/com.termux/...（app 域不可读）：
         // 不注入则任何 node/npm 子进程启动即 OpenSSL configuration error 退出（agent 工具调用
-        // npm/node 全部失败，引擎本体侥幸存活）。与 UndoGate/AdbState 同一修复（坑 #5 统一到
+        // npm/node 全部Failed，引擎本体侥幸存活）。与 UndoGate/AdbState 同一修复（坑 #5 统一到
         // 引擎级 env，覆盖 agent 所有工具子进程，2026-08-24 真机实测实锤）。
         "OPENSSL_CONF" to File(usrDir, "etc/tls/openssl.cnf").absolutePath,
       )
@@ -1067,7 +1067,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
       "DSH_APP_VERSION_CODE" to BuildConfig.VERSION_CODE.toString(),
       // Directory-picker endpoint auth token (validated by the web-compat plugin via x-dsh-pick-token).
       "DSH_PICK_TOKEN" to (pickToken ?: ""),
-      // ADB 授权状态（0.13.0 F1.7）：dsh-android-bridge 插件据此失败关闭；门控=完全访问档位+开关+配对。
+      // ADB 授权状态（0.13.0 F1.7）：dsh-android-bridge 插件据此Failed关闭；门控=完全访问档位+开关+配对。
       "DSH_ADB_ALLOW" to (if (AdbState.allowSwitch(context)) "1" else "0"),
       "DSH_ADB_PAIRED" to (if (AdbState.paired(context)) "1" else "0"),
       "DSH_ADB_WIRELESS" to (if (AdbState.paired(context)) "1" else "0"),
@@ -1093,7 +1093,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
      * （无障碍/DOM 优先、先验前台、按 ref 而非盲点坐标、动作后必校验、输入单次注入并回读）。
      */
     private val PHONE_CONTROL_SKILL = """
-# 手机操控流程（DSH 设备控制）
+# 手机操控流程（DSH Device Control）
 
 ## 固定顺序
 1. 会话档位必须是 danger-full-access，否则设备工具一律拒绝（切换入口：会话底部权限芯片 → 完全权限；**不要试图让工具自己提权**，也不要用 Termux/ADB 绕路）。
@@ -1101,7 +1101,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
 3. 感知：android_ui_dump（无障碍语义树，首选）→ 若结果是 WebView 容器或目标是 DSH 自己的 Web UI，改用 android_web_dump（DOM 快照）。
 4. 卡住时：**先 android_ui_global back**（返回上一级），或 home 回桌面重新进入——子菜单/弹窗/详情页出不来时这是第一步。
 5. 动作：android_ui_click / android_ui_input，引用用 ref（id:nN / text:精确文本#k / desc: / rid: / wN / css: / text: / role:）。
-6. 校验：工具自带回执（点击回报「已生效 / 未观察到界面变化」；输入回报「回读一致 / 未落地」）——不要假设动作成功。
+6. 校验：工具自带回执（点击回报「已生效 / 未观察到界面变化」；输入回报「回读一致 / 未落地」）——不要假设动作Success。
 7. 需要看画面时用 android_screenshot（图像直接随结果返回，不需要再 read_image）。
 
 ## 纪律
@@ -1109,7 +1109,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
 - 同名节点必须消歧：用 dump 里的 #k 序号（text:设置#2）。
 - 抓到的包名与前台不一致时以 dumpsys 为准（uiautomator/无障碍可能抓到覆盖层）。
 - 输入只走单次注入 + 回读断言；不要用 keyevent 打字母（中文 IME 会汉字化），不要拆成多段输入。
-- dump 失败（重 UI / 播放页常见）时按提示走：先 back 退出重页面，或截图看画面；**不要转去尝试 Termux 或 ADB**（未配对时那条路不存在，只会浪费轮次）。
+- dump Failed（重 UI / 播放页常见）时按Notice走：先 back 退出重页面，或截图看画面；**不要转去尝试 Termux 或 ADB**（未配对时那条路不存在，只会浪费轮次）。
 - 连续两次动作未产生预期变化时停下来重新 dump，并如实汇报当前界面状态，不要继续猜测。
 """
 
