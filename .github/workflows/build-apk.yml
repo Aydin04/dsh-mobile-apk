@@ -13,17 +13,25 @@
 name: build-apk
 
 on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       abi:
         description: '目标 ABI（可多选）'
         type: choice
         options: [arm64, x86_64, 'both']
-        default: 'both'
+        default: 'arm64'
       suffix:
-        description: 'APK 版本后缀（默认空=正式版纯净版本号；测试构建显式传 -fix 等）'
+        description: 'APK 版本后缀'
         type: string
         default: ''
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -88,10 +96,25 @@ jobs:
           set -e
           node scripts/build-apk.mjs --abi "${{ matrix.abi }}" --suffix "${{ github.event.inputs.suffix }}"
 
-      - name: 上传 APK 产物（本地下载 debug；不出 Release）
+      - name: 上传 APK 产物
         uses: actions/upload-artifact@v4
         with:
           name: dsh-mobile-apk-${{ matrix.abi }}${{ github.event.inputs.suffix }}
           path: out/v0.13.0/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: 发布 APK 到 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        with:
+          tag_name: v0.13.7fx-1-en
+          name: "DeepSeek Harness Mobile v0.13.7fx-1 (English Translated)"
+          body: |
+            ## DeepSeek Harness Mobile v0.13.7fx-1 (English Edition)
+            
+            - Complete UI strings, toasts, and system messages translated to English.
+            - Embedded ARM64 runtime snapshot ready to run.
+          files: out/v0.13.0/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
