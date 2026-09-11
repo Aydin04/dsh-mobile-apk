@@ -106,14 +106,14 @@ class EngineManager(private val context: Context, private val pickToken: String?
     val stage = SnapshotTransaction.stageRoot(filesDir)
     EngineManager.snapshotRefreshing = true
     try {
-      onStage("正在检查上次更新…")
+      onStage("Checking previous update…")
       applyRecovery(SnapshotTransaction.recover(filesDir, stage, usrDir, homeDir, liveFingerprint()))
       if (snapshotFresh()) {
         // A rolled-forward transaction already activated this snapshot.
         return true
       }
 
-      onStage("正在解压运行时…")
+      onStage("Extracting runtime…")
       SnapshotFs.deletePath(stage)
       SnapshotFs.createDirectories(stage)
       if (!extractSnapshotTo(stage, onProgress)) {
@@ -127,14 +127,14 @@ class EngineManager(private val context: Context, private val pickToken: String?
         return false
       }
 
-      onStage("正在恢复用户数据…")
+      onStage("Restoring user data…")
       restoreLegacyUserData(File(homeDir, ".dsh"))
       // 0.13.5 W1a（issue #126 P1 的兜底诉求）：换树前留一份 settings.yaml 快照。
       // 事务化本身从不触碰用户数据，这份副本是「万一」时的取证/回滚来源——
       // 只保留最近 3 代，写Failed仅告警（不阻断刷新）。
       snapshotSettingsBackup()
 
-      onStage("正在完成运行时更新…")
+      onStage("Finalizing runtime update…")
       SnapshotTransaction.writeMarker(
         filesDir,
         SnapshotTransaction.Marker(SnapshotTransaction.Phase.STAGED, fingerprint, startedAt),
@@ -147,7 +147,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
         preservedNames = SnapshotUserData.preservedNames.toSet(),
         fingerprint = fingerprint,
         startedAt = startedAt,
-        onEntry = { onStage("正在更新 " + it) },
+        onEntry = { onStage("Updating " + it) },
       )
       // Commit point: the fingerprint is durable only after the swap completed.
       writeFingerprint(fingerprint)

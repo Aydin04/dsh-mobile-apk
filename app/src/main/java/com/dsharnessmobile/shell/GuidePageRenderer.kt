@@ -118,14 +118,14 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
   }
 
   private fun defaultHint(phase: GuidePhase): String = when (phase) {
-    GuidePhase.Starting -> "首次启动会解压内嵌运行时，请保持应用在前台。"
-    GuidePhase.Extracting -> "正在写入内嵌 Termux 环境，约 700MB，需数分钟，请勿关闭应用。"
-    GuidePhase.Updating -> "下载并校验快照后会自动切换运行时。"
-    GuidePhase.Recovering -> "看门狗正在拉起引擎，通常几秒内恢复。"
-    GuidePhase.Undoing -> "正在把配置/插件回滚到最后良好快照（自动回撤）。"
-    GuidePhase.Error -> "可打开控制台查看 engine.log，或点击重试。"
-    GuidePhase.Closed -> "Engine stopped，不会自动恢复。"
-    GuidePhase.Idle -> "引擎就绪后将进入 DeepCode。"
+    GuidePhase.Starting -> "First launch will extract the embedded runtime. Please keep the app in the foreground."
+    GuidePhase.Extracting -> "Writing embedded Termux environment (~700MB), takes a few minutes. Please do not close the app."
+    GuidePhase.Updating -> "Downloading and verifying snapshot, runtime will switch automatically."
+    GuidePhase.Recovering -> "Watchdog is starting the engine, usually recovers in a few seconds."
+    GuidePhase.Undoing -> "Rolling back configuration/plugins to the last known good snapshot (auto-undo)."
+    GuidePhase.Error -> "You can open the console to check engine.log, or tap Retry."
+    GuidePhase.Closed -> "Engine stopped, will not recover automatically."
+    GuidePhase.Idle -> "Will enter DeepCode once the engine is ready."
   }
 
   private fun setStatusPulse(on: Boolean) {
@@ -173,7 +173,7 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
     val text = logSummary.text?.toString().orEmpty()
     if (text.isBlank()) return
     activity.copyTextNative(text)
-    android.widget.Toast.makeText(activity, "日志已复制", android.widget.Toast.LENGTH_SHORT).show()
+    android.widget.Toast.makeText(activity, "Log copied", android.widget.Toast.LENGTH_SHORT).show()
   }
 
   fun showWeb() {
@@ -196,7 +196,7 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
     val crash = activity.crashInfo
     if (crash != null) {
       crashBanner.visibility = View.VISIBLE
-      crashBanner.text = "上次异常退出：$crash"
+      crashBanner.text = "Last crash: $crash"
     } else {
       crashBanner.visibility = View.GONE
     }

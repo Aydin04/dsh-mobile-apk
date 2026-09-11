@@ -62,7 +62,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
             } else if (activity.webView.visibility == View.VISIBLE) {
               engineMonitorFailures++
               if (engineMonitorFailures >= UI_DEAD_CONFIRMATIONS) {
-                activity.applyGuidePhase(GuidePhase.Recovering, "引擎未运行，正在自动恢复…")
+                activity.applyGuidePhase(GuidePhase.Recovering, "Engine not running, recovering automatically…")
                 activity.showGuide()
               }
             }
@@ -91,7 +91,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         LogCollector.log("dsh-shell", "webview JS 无响应，渲染进程冻结（frozenMs=" + (now - jsAckAt) + "）")
         try {
           android.widget.Toast.makeText(
-            activity, "页面无响应，正在自动刷新…", android.widget.Toast.LENGTH_LONG,
+            activity, "Page unresponsive, reloading…", android.widget.Toast.LENGTH_LONG,
           ).show()
         } catch (_: Exception) {
         }
@@ -143,13 +143,13 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     if (!updateRunning.compareAndSet(false, true)) return
     activity.guideRenderer.chrome.updateButton.isEnabled = false
     activity.guideRenderer.chrome.updateButton.alpha = 0.55f
-    activity.applyGuidePhase(GuidePhase.Updating, "检查更新…")
+    activity.applyGuidePhase(GuidePhase.Updating, "Checking for updates…")
     UpdateManager(activity).checkAndApply { status ->
       activity.runOnUiThread {
-        val done = status.startsWith("更新完成") || status.startsWith("Update failed")
+        val done = status.startsWith("Update completed") || status.startsWith("Update failed")
         activity.applyGuidePhase(
           if (status.startsWith("Update failed")) GuidePhase.Error
-          else if (status.startsWith("更新完成")) GuidePhase.Recovering
+          else if (status.startsWith("Update completed")) GuidePhase.Recovering
           else GuidePhase.Updating,
           status,
         )
@@ -171,7 +171,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     freezeHandler.removeCallbacks(freezeRunnable)
     activity.runOnUiThread {
       activity.hideSoftInput()
-      activity.applyGuidePhase(GuidePhase.Closed, "引擎已关闭")
+      activity.applyGuidePhase(GuidePhase.Closed, "Engine stopped")
       activity.showGuide()
     }
     try { EngineService.instance?.requestShutdown() } catch (_: Exception) {
@@ -261,10 +261,10 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         return@Thread
       }
       if (!isCurrentEngineFlow(generation)) return@Thread
-      // 启动即有反馈：进入测试界面显示"正在启动引擎…"（不再白屏等 probe）。
+      // 启动即有反馈：进入测试界面显示"Starting engine…"（不再白屏等 probe）。
       activity.runOnUiThread {
         if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-        activity.applyGuidePhase(GuidePhase.Starting, "正在启动引擎…")
+        activity.applyGuidePhase(GuidePhase.Starting, "Starting engine…")
         activity.showGuide()
       }
       // Resolve a runtime transaction interrupted by a kill, an OEM cleaner or a
@@ -275,9 +275,9 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         if (!isCurrentEngineFlow(generation)) return@Thread
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Extracting, "正在解压运行时")
+          activity.applyGuidePhase(GuidePhase.Extracting, "Extracting runtime")
           activity.guideRenderer.progressText.visibility = View.VISIBLE
-          activity.guideRenderer.progressText.text = "准备写入内嵌环境…"
+          activity.guideRenderer.progressText.text = "Preparing embedded environment…"
         }
         val ok = activity.engineManager.refreshSnapshot(
           onProgress = { done, _ ->
@@ -286,16 +286,16 @@ internal class EngineStartFlow(private val activity: MainActivity) {
               // done 是解压后字节数，total 是压缩包字节数，口径不一致；只显示已解压量。
               val mb = done / 1024 / 1024
               activity.guideRenderer.progressText.visibility = View.VISIBLE
-              activity.guideRenderer.progressText.text = "已写入 " + mb + " MB"
+              activity.guideRenderer.progressText.text = "Extracted " + mb + " MB"
               if (activity.guideRenderer.lastGuidePhase != GuidePhase.Extracting) {
-                activity.applyGuidePhase(GuidePhase.Extracting, "正在解压运行时")
+                activity.applyGuidePhase(GuidePhase.Extracting, "Extracting runtime")
               }
             }
           },
           onStage = { stage ->
             activity.runOnUiThread {
               if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-              activity.applyGuidePhase(GuidePhase.Extracting, "正在更新运行时")
+              activity.applyGuidePhase(GuidePhase.Extracting, "Updating runtime")
               activity.guideRenderer.progressText.visibility = View.VISIBLE
               activity.guideRenderer.progressText.text = stage
             }
@@ -306,14 +306,14 @@ internal class EngineStartFlow(private val activity: MainActivity) {
             if (!isCurrentEngineFlow(generation)) return@runOnUiThread
             // 0.13.1 W3：Extraction failed此前零落盘（engine.log 尚不存在、仅 logcat），镜像现场到共享目录。
             activity.engineManager.mirrorDiagnosticsToShared("snapshot-refresh-failed")
-            activity.applyGuidePhase(GuidePhase.Error, "运行时Update failed（诊断包已存至 Documents/dshdata/diagnostics）")
+            activity.applyGuidePhase(GuidePhase.Error, "Runtime update failed (diagnostics saved to Documents/dshdata/diagnostics)")
             activity.showGuide()
           }
           return@Thread
         }
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Starting, "正在启动引擎…")
+          activity.applyGuidePhase(GuidePhase.Starting, "Starting engine…")
         }
       }
       if (!isCurrentEngineFlow(generation)) return@Thread
@@ -355,7 +355,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
           val s = waitedSeconds
           activity.runOnUiThread {
             if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-            activity.applyGuidePhase(GuidePhase.Starting, "引擎启动中（已等待 ${60 - s}s，冷启动较慢属正常）")
+            activity.applyGuidePhase(GuidePhase.Starting, "Starting engine (waited ${60 - s}s, cold boot may take longer)")
           }
         }
         Thread.sleep(pollStepMs)
@@ -366,7 +366,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         activity.engineManager.mirrorDiagnosticsToShared("engine-died-during-boot")
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Error, "引擎启动Failed（诊断包已存至 Documents/dshdata/diagnostics）")
+          activity.applyGuidePhase(GuidePhase.Error, "Engine failed to start (diagnostics saved to Documents/dshdata/diagnostics)")
           activity.showGuide()
         }
         onEngineStartTimeout(generation)
@@ -383,7 +383,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         // 引擎仍在启动，3s engineMonitorRunnable 会兜底切界面。
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Starting, "引擎启动较慢（已超过 90s），仍在后台启动中…")
+          activity.applyGuidePhase(GuidePhase.Starting, "Engine starting slowly (>90s), continuing in background…")
         }
       }
       return@Thread
@@ -405,7 +405,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
       activity.runOnUiThread {
         val phase = when {
           status.startsWith("Update failed") -> GuidePhase.Error
-          status.startsWith("更新完成") -> GuidePhase.Recovering
+          status.startsWith("Update completed") -> GuidePhase.Recovering
           else -> GuidePhase.Updating
         }
         activity.applyGuidePhase(phase, status)

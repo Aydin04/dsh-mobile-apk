@@ -33,7 +33,7 @@ class ConsoleSession(private val context: Context) {
     val engineManager = EngineManager(context, EngineManager.ensurePickToken())
     val bash = File(engineManager.usrDir, "bin/bash")
     if (!bash.exists()) {
-      listener.onStatus("快照缺失（usr/bin/bash 不存在），无法打开控制台")
+      listener.onStatus("Snapshot missing (usr/bin/bash does not exist), cannot open console")
       return false
     }
     // Exec-bit fallback: some devices/filesystems lose the exec bit after extraction (execve → EACCES,
@@ -100,11 +100,11 @@ class ConsoleSession(private val context: Context) {
       }
       reader.isDaemon = true
       reader.start()
-      listener.onStatus("bash 已启动（快照 Termux 环境）")
+      listener.onStatus("bash started (Termux snapshot environment)")
       true
     } catch (t: Throwable) {
       LogCollector.log(TAG, "console start FAILED: " + (t.message ?: t.javaClass.simpleName))
-      listener.onStatus("控制台启动Failed：" + (t.message ?: t.javaClass.simpleName))
+      listener.onStatus("Console launch failed: " + (t.message ?: t.javaClass.simpleName))
       false
     }
   }

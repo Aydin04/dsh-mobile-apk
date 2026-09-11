@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>dsh 控制台</title>
+<title>dsh Console</title>
 <style>
   :root {
     --ds-bg: #080A09;
@@ -222,21 +222,21 @@
 <body>
   <div id="top">
     <div id="statusbar">
-      <button id="close" type="button">关闭</button>
-      <span class="title">控制台</span>
-      <span class="pill grow"><span class="dot" id="engineDot"></span><span id="engineStatus">引擎检测中…</span></span>
+      <button id="close" type="button">Close</button>
+      <span class="title">Console</span>
+      <span class="pill grow"><span class="dot" id="engineDot"></span><span id="engineStatus">Checking engine…</span></span>
     </div>
     <div id="tools">
-      <span class="pill"><span class="dot" id="bashDot"></span><span id="consoleStatus">启动中…</span></span>
+      <span class="pill"><span class="dot" id="bashDot"></span><span id="consoleStatus">Starting…</span></span>
       <span style="flex:1"></span>
-      <button class="ghost" id="copyBtn" type="button">复制</button>
-      <button class="ghost" id="clearBtn" type="button">清空</button>
-      <button class="ghost" id="restartBtn" type="button">重连</button>
+      <button class="ghost" id="copyBtn" type="button">Copy</button>
+      <button class="ghost" id="clearBtn" type="button">Clear</button>
+      <button class="ghost" id="restartBtn" type="button">Reconnect</button>
     </div>
   </div>
   <div id="wrap">
-    <div id="output"><span class="muted">快照内嵌 Termux bash。引擎未运行时也可排查启动失败。</span><br><br></div>
-    <button id="jump" type="button">回到底部</button>
+    <div id="output"><span class="muted">Snapshot embedded Termux bash. Used to diagnose engine startup failures.</span><br><br></div>
+    <button id="jump" type="button">Jump to bottom</button>
   </div>
   <div id="dock">
     <div id="chips">
@@ -247,9 +247,9 @@
     </div>
     <div id="inputrow">
       <div id="cmdwrap">
-        <input id="cmd" type="text" placeholder="输入命令，回车执行" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send">
+        <input id="cmd" type="text" placeholder="Enter command, press Enter to execute" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send">
       </div>
-      <button id="send" type="button">发送</button>
+      <button id="send" type="button">Send</button>
     </div>
   </div>
 <script>
@@ -320,8 +320,8 @@
   window.__consoleStatus = function (text) {
     var t = text || '';
     consoleStatus.textContent = t;
-    if (/已启动/.test(t)) setReady(true, t);
-    else if (/退出|失败|缺失/.test(t)) setReady(false, t);
+    if (/started|online|已启动/i.test(t)) setReady(true, t);
+    else if (/exit|fail|miss|error|退出|失败|缺失/i.test(t)) setReady(false, t);
   };
 
   window.__consoleInsets = function (top, bottom, ime) {
@@ -334,14 +334,14 @@
       var raw = window.consoleBridge.engineStatus();
       var info = JSON.parse(raw);
       if (info && info.running) {
-        engineStatus.textContent = '引擎 ' + info.latencyMs + 'ms';
+        engineStatus.textContent = 'Engine ' + info.latencyMs + 'ms';
         engineDot.className = 'dot ok';
       } else {
-        engineStatus.textContent = '引擎离线';
+        engineStatus.textContent = 'Engine Offline';
         engineDot.className = 'dot err';
       }
     } catch (e) {
-      engineStatus.textContent = '引擎检测失败';
+      engineStatus.textContent = 'Engine Probe Failed';
       engineDot.className = 'dot err';
     }
   }
@@ -409,12 +409,12 @@
     var btn = document.getElementById('copyBtn');
     try {
       if (window.consoleBridge.copyText) window.consoleBridge.copyText(text);
-      btn.textContent = '已复制';
-      setTimeout(function () { btn.textContent = '复制'; }, 1200);
+      btn.textContent = 'Copied';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 1200);
     } catch (e) {}
   });
   document.getElementById('restartBtn').addEventListener('click', function () {
-    setReady(false, '正在重连…');
+    setReady(false, 'Reconnecting…');
     try { window.consoleBridge.restart(); } catch (e) {}
   });
   document.querySelectorAll('.chip').forEach(function (el) {
