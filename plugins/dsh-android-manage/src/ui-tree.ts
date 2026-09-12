@@ -69,7 +69,7 @@ export interface NodeEntry {
 
 const ATTR_RE = /([a-zA-Z-]+)="([^"]*)"/g
 
-function decodeEntities(s: string): string {
+export function decodeEntities(s: string): string {
   return s
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -77,6 +77,15 @@ function decodeEntities(s: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&amp;/g, '&')
     .replace(/&#(\d+);/g, (_m, n: string) => String.fromCodePoint(Number(n)))
+}
+
+/** bounds="[x1,y1][x2,y2]" → {x,y,w,h}；畸形/缺省按零尺寸（0,0,0,0）——V2 编码保留零尺寸节点做骨架。 */
+export function parseBoundsToBox(b: string | undefined): { x: number; y: number; w: number; h: number } {
+  if (!b) return { x: 0, y: 0, w: 0, h: 0 }
+  const m = /\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/.exec(b)
+  if (!m) return { x: 0, y: 0, w: 0, h: 0 }
+  const x1 = Number(m[1]); const y1 = Number(m[2]); const x2 = Number(m[3]); const y2 = Number(m[4])
+  return { x: x1, y: y1, w: Math.max(0, x2 - x1), h: Math.max(0, y2 - y1) }
 }
 
 /** 解析 bounds="[x1,y1][x2,y2]"；畸形/零尺寸返回 null（该节点丢弃）。 */
@@ -96,6 +105,11 @@ interface RawNode { attrs: Record<string, string>; id: string; parentId: string 
  * 解析 hierarchy XML → 原始节点表（含深度路径 id 与父 id）。
  * 单一栈机：开标签下钻、自闭合同层计数、闭标签归位；对厂商畸形输出
  * （属性缺省/坏 bounds）按节点丢弃，不中断整体解析。
+ *
+ * 0.13.8 P0-2（产线 bug 修复）：原实现只匹配 `<node ...>` 开标签、从不处理
+ * `</node>` 出栈——兄弟节点被错误地压成子节点，depth/父链/`@nX` 区域限定/
+ * findActionableAncestor 全部失真（实测最大深度 91 vs 正确 19）。现显式匹配
+ * `</node>` 归位；畸形 XML（多余闭标签）按容错弹栈处理。
  */
 export function parseUiTreeXml(xml: string): { raw: RawNode[]; rotation: number } {
   let rotation = 0
@@ -106,10 +120,15 @@ export function parseUiTreeXml(xml: string): { raw: RawNode[]; rotation: number 
   // 栈帧：index = 本节点在同父下的序号；next = 下一个子节点槽位。
   // 虚拟根永远在栈底，其 index 不参与路径。
   const stack: Array<{ index: number; next: number }> = [{ index: -1, next: 0 }]
-  const re = /<node\s([^>]*?)(\/?)>/g
+  const re = /<node\s([^>]*?)(\/?)>|<\/node>/g
   let m: RegExpExecArray | null
   while ((m = re.exec(xml)) !== null) {
-    const attrsText = m[1]
+    if (m[0] === '</node>') {
+      // 闭标签归位（畸形 XML 的多余闭标签按容错忽略——不弹虚拟根）
+      if (stack.length > 1) stack.pop()
+      continue
+    }
+    const attrsText = m[1] ?? ''
     const selfClosing = m[2] === '/'
     const attrs: Record<string, string> = {}
     ATTR_RE.lastIndex = 0
@@ -125,6 +144,27 @@ export function parseUiTreeXml(xml: string): { raw: RawNode[]; rotation: number 
     if (!selfClosing) stack.push({ index, next: 0 })
   }
   return { raw, rotation }
+}
+
+/**
+ * 解析结果结构自检（0.13.8 P0-2）：解析结果与源 XML 自相矛盾时**响亮拒绝**，
+ * 绝不静默产出错树（错误树比没有树更危险）。
+ * 检查：① 节点标签计数与解析产出一一对应；② 根节点必为 "0"；
+ * ③ 栈未完全归位（未闭合的开标签）视为畸形——按容错放行但由调用方标记。
+ */
+export function checkUiTreeParse(xml: string, raw: RawNode[]): { ok: true } | { ok: false; reason: string } {
+  const tagCount = (xml.match(/<node[\s>]/g) ?? []).length
+  if (raw.length !== tagCount) {
+    return { ok: false, reason: `节点数不一致：XML 含 ${tagCount} 个 <node> 标签，解析产出 ${raw.length} 条（源 XML 畸形或版本不兼容）` }
+  }
+  if (raw.length > 0 && raw[0].id !== '0') {
+    return { ok: false, reason: `根节点 id 应为 "0"，实得 "${raw[0].id}"（栈机归位错误）` }
+  }
+  const maxDepth = raw.reduce((acc, r) => Math.max(acc, r.id === '' ? 0 : r.id.split('.').length), 0)
+  if (maxDepth > 128) {
+    return { ok: false, reason: `最大深度 ${maxDepth} 超出合理上界（128）——栈机未归位，解析结果不可信` }
+  }
+  return { ok: true }
 }
 
 /** 剪枝：只保留可交互或带标签的节点；去重 → 分档排序 → 封顶截断。
@@ -185,9 +225,11 @@ export function pruneNodes(
       windowId: at['window-id'] ?? '',
     })
   }
-  // 分档排序：可交互带标签 > 可交互 > 带标签 > 其它；同档按 y 再 x（阅读序）。
-  const tier = (n: UiNode): number => (n.clickable || n.editable || n.scrollable) && (n.text || n.desc) ? 0 : (n.clickable || n.editable || n.scrollable) ? 1 : (n.text || n.desc) ? 2 : 3
-  nodes.sort((p, q) => tier(p) - tier(q) || p.cy - q.cy || p.cx - q.cx)
+  // 0.13.8 P0-3：DFS 真树序（原始路径字典序 = 前序遍历）——0.13.5 的「分档排序」把兄弟
+  // 节点按档位/坐标打乱，模型看到的相邻行出现 21.8% 的深度跳变（真树遍历不可能），
+  // 层级感知完全失效。真树序下 depth 严格递变 ≤1，配合 parentId（最近幸存祖先）层级唯一。
+  // 阅读序信息不丢失：同层节点保持 XML 顺序（uiautomator 已按 top-left 序输出）。
+  nodes.sort((p, q) => (p.id < q.id ? -1 : p.id > q.id ? 1 : 0))
   // 0.13.5：maxNodes=0 表示不截断（用户拍板：完整暴露，复杂界面才可用）
   const kept = limits.maxNodes > 0 ? nodes.slice(0, limits.maxNodes) : nodes
   // 重编号：n0..nN-1；父引用按原始路径映射到**最近的幸存祖先**（被剪掉的中间层自动上溯）。
@@ -225,6 +267,8 @@ export function resolveRef(
   byId: Map<string, NodeEntry>,
   nodes: UiNode[],
   ref: string,
+  /** V2 专用：子树池提供者（预序区间切片）。缺省 = V1 的 origPath 前缀匹配。 */
+  scopePool?: (scopeId: string) => UiNode[] | null,
 ): { ok: true; node: UiNode; matches?: UiNode[] } | { ok: false; error: string; matches?: UiNode[] } {
   const r = ref.trim()
   if (r === '') return { ok: false, error: 'ref 为空' }
@@ -261,12 +305,18 @@ export function resolveRef(
   if (scopeId !== '') {
     const scope = byId.get(scopeId)
     if (!scope) return { ok: false, error: `作用域 ${scopeId} 不在最近一次 dump 中——请重新 android_ui_dump` }
-    const scopePath = scope.origPath
-    pool = nodes.filter((n) => {
-      const p = n.origPath ?? ''
-      return p === scopePath || p.startsWith(scopePath + '.')
-    })
-    if (pool.length === 0) pool = [scope.n]
+    if (scopePool) {
+      const v2Pool = scopePool(scopeId)
+      if (v2Pool && v2Pool.length > 0) pool = v2Pool
+      else pool = [scope.n]
+    } else {
+      const scopePath = scope.origPath
+      pool = nodes.filter((n) => {
+        const p = n.origPath ?? ''
+        return p === scopePath || p.startsWith(scopePath + '.')
+      })
+      if (pool.length === 0) pool = [scope.n]
+    }
   }
   const cands = pool.filter((n) => (kind === 'text' ? n.text === t : kind === 'desc' ? n.desc === t : n.rid === t))
   if (cands.length === 0) {
@@ -310,4 +360,21 @@ export function findActionableAncestor(
     cur = parentByOrig.get(cur) ?? ''
   }
   return null
+}
+
+/** V2 下的祖先回退（§S2.6 C2）：`actionableAncestor` 查表，O(1)——语义与
+ *  `findActionableAncestor` 等价（壳侧编码时已按同一规则上溯，DD-8）。 */
+export function actionableAncestorV2(v: { rows: UiNode[]; actionableAncestor: Int32Array }, node: UiNode): UiNode | null {
+  const i = Number(node.id.slice(1))
+  if (!Number.isInteger(i) || i < 0 || i >= v.rows.length) return null
+  const p = v.actionableAncestor[i]
+  return p >= 0 && p < v.rows.length ? v.rows[p] : null
+}
+
+/** V2 下的 `@nX` 区域限定：子树 = 预序连续区间（§S2.6），O(1) 切片替代 origPath 前缀匹配。 */
+export function scopePoolV2(v: { rows: UiNode[]; subtreeEnd: Int32Array }, scopeId: string): UiNode[] | null {
+  const i = Number(scopeId.slice(1))
+  if (!Number.isInteger(i) || i < 0 || i >= v.rows.length) return null
+  const end = v.subtreeEnd[i]
+  return v.rows.slice(i, end > i ? end : i + 1)
 }

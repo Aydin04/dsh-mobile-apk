@@ -114,3 +114,54 @@
     壳侧不设工作目录 → 新会话 cwd=`/` → `@` 菜单列的是设备根目录（acct/apex/cache…），用户看到「@文件功能无法使用」
     （apk #150/#144）。修复：`ProcessBuilder.directory(应用工作区根)`（0.13.7fx-1，EngineManager.workspaceRootDir）。
     同一族的坑：任何「上游拿 process.cwd() 兜底」的地方在 Android 上都会落到 `/`。
+
+66. **Android 应用域禁 `link(2)`：补丁必须清点目标文件的全部 link 站点，不能只补历史锚点**：
+    0.13.7 追上游 0.1.5 后，运行期 asset `session-persistence-jsonl-index.js` 只给 `materialize` 路径
+    （`lib/index.js:2973`）补了 `EACCES → rename` 回退，漏了 `publishCurrentExclusive()`（:2021/:2032）——
+    而后者正是 `v0→v3` 会话迁移的必经路径，结果是**升级前写入的会话全部打不开**（apk #154，贡献者定位）。
+    修复：asset 从 0.1.5 包重出（两处都补）、新增构建期补丁 `spj-migration-link-F5`、门禁断言「两处标记都在」、
+    并加行为回归 `scripts/patches/tests/spj-migration-link-f5.test.mjs`（桩 fs 让 link 抛 EACCES → 断言 rename 生效）。
+    回退必须用**模块顶层导入的 `rename`**：`internals.fs`（defaultFileSystem）只暴露 open/readFile/readdir/stat/lstat/link/rm，
+    `internals.fs.rename` 会 `TypeError`（贡献者在 PR #156 里实测记录）。同类站点清点义务适用于所有 fs 原语回退补丁。
+
+67. **文件名净化把 `..` 当「非法字符」处理是无效防线（#177 实锤，0.13.8 修复）**：`sanitizeName`
+    旧版只替换 `?*|:"<>` 与控制符，字符类无 `/`、无 `\`、无点——而 `..` 不是非法字符而是**路径语义
+    token**：外部 ContentProvider 完全可控 DISPLAY_NAME（`../../../../pwn.txt`），净化后原样落
+    `File(dir, name)`，上溯 5 级 = 应用私有数据目录根（任意新建，已存在文件因 uniqueName 的
+    exists() 检查不被覆盖）。根因 = validate() 守 URI、sanitizeName() 守字符集，**拼好的最终
+    落点无人校验**。修复 = ① sanitizeName 白名单化（`/` `\` → `_`、`\.{2,}` 折叠、百分号解码
+    先行、去首尾点）；② copyIn 落点走 safeTarget canonical 归属断言（写前+写后，双侧
+    canonical 化——Android 把 `/data/user/0` 解析为 `/data/data`，只做一侧会永远拒绝），fail-closed。
+    铁律：凡「外部字符串 → 落盘路径」一律过 safeTarget 同型守门，新增出口先查本坑。
+
+68. **部署默认写面档位不是能力门（#172 实锤，0.13.8 修复）**：`dsh-android-bridge` 的
+    `gateFor/gateFacts/controlDecision` 三处曾叠 `&& st.tier !== 'T0'`——出厂装配
+    `writeMode: workspace-write`（profile-web.cordis.patch.yml:23）使 `tier` 恒 T0，
+    ADB 通道**恒判未就绪**（`android_adb_shell_exec` 永不返回 via:'adb'），且设置页显示
+    「未授权（T0）」——坑 29「勿把部署默认当死锁」的活体复刻。修复 = 三处删 tier 条件，
+    能力门 = 引擎级三道门 + 会话档位实时 resolve；`tier` 降级为部署视图字段
+    （AdbAuthSection 的「已授权」改按三道门，linux-env 的 adbTier 文案标注「档位视图」）。
+    铁律：门禁判定只允许「设备全局事实 + 会话实时档位」，任何部署常量进判定即缺陷。
+
+69. **往 profile patch 挂「上游已挂」的包 = 整棵插件树加载失败（0.13.8 批 F/P2-14 实锤）**：
+    按设计文档把 `@deepseek-ai/dsh-spill-local` + `dsh-spill-policy` 以 `- insert:` 挂进
+    `scripts/profile-web.cordis.patch.yml` 后，设备上引擎起不来，日志真因：
+    `dsh: plugin tree failed to load: failed to apply loader entry include (cordis:include):
+    duplicate loader entry id: spill-local`。即**上游 host 组合默认已经挂了 spill 子系统**
+    （所以「已装未挂」的推断是错的——overlay manifest 只说明包在快照里，不代表没挂）。
+    代价是整棵树加载失败，不是单插件降级。铁律：新增 `- insert:` 前先确认 row id 在上游
+    组合/预置里不存在；挂载失败先看 duplicate id，再谈配置。
+70. **profile patch 的合并语义是「按 id 只增不删」——错误的 row 会永久留在设备上（0.13.8 实锤）**：
+    坑 69 的 spill 行写进 `home/.dsh/profiles/web/cordis.patch.yml` 后，**改回代码 + 重装 APK
+    + 重解压快照都没能删掉它**（实测：重装后该文件仍是旧的含 spill 版本，引擎持续起不来）。
+    根因是快照事务的 profiles 分区合并对 `cordis.patch.yml` 按 id 合并（0.13.8 B345 批
+    `SnapshotTransaction.mergePatchYamlById`），设计目的是保住用户手改，代价是**我们自己也删不掉
+    已注入的行**。恢复路径（已实测）：`adb shell` 删/改
+    `<files>/home/.dsh/profiles/web/cordis.patch.yml`（注意不要留 root 属主备份文件，见坑 71），
+    或清应用数据。**发布含义**：0.13.8 之后若需要下线某条已注入 row，老设备上删不掉——
+    必须在合并语义上给「上游注入行以 staged 为准」留口子（已登记 known-gaps）。
+71. **profiles 目录里放 root 属主文件 → 引擎 watcher EACCES 崩溃（0.13.8 调试时踩到）**：
+    用 `adb shell cp`（root）在 `home/.dsh/profiles/web/` 下留了 `cordis.patch.yml.bak-spill`，
+    引擎对 profiles 目录做 `watch`，读不到该文件 → `syscall: 'watch', code: 'EACCES'` 直接崩，
+    表现为「引擎启动失败」而日志里没有任何插件错误。铁律：调试期在 profiles 目录里造文件
+    必须 `chown u0_a53:u0_a53` 或立刻删除（应用 uid 见 `dumpsys package`）。

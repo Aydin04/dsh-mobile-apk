@@ -10,6 +10,18 @@
   <string name="ds_undoing">Rolling back...</string>
   <string name="ds_open_console">Open Console</string>
   <string name="ds_check_update">Check Updates</string>
+  <!-- 0.13.8 Batch H: Guide Page APK Self-Update (Manual only, two-step confirmation, auto install request) -->
+  <string name="ds_apk_checking">Checking...</string>
+  <string name="ds_apk_latest">APK is up to date %1$s</string>
+  <string name="ds_apk_confirm">Download and install %1$s</string>
+  <string name="ds_apk_available">New APK %1$s available (current %2$s, %3$s) - tap again to download and install</string>
+  <string name="ds_apk_downloading">Downloading %1$d%%</string>
+  <string name="ds_apk_download_hint">Downloading %1$s (%2$s) from mirror chain - please keep app in foreground</string>
+  <string name="ds_apk_retry">Retry download and install %1$s</string>
+  <string name="ds_apk_retry_install">Retry install</string>
+  <string name="ds_apk_need_permission">"Install unknown apps" permission needed. Settings page opened - enable and return to continue</string>
+  <string name="ds_apk_permission_denied">Permission denied - APK downloaded, grant permission and tap button to install</string>
+  <string name="ds_apk_installing">System installer launched - re-open app after installation finishes</string>
   <string name="ds_copy_log">Copy</string>
   <string name="ds_log_title">engine.log</string>
   <string name="ds_runtime_ready">Runtime Ready</string>

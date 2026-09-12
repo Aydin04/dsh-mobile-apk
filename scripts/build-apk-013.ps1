@@ -21,6 +21,34 @@ if ($Fast) {
 $apkDir = Join-Path $Root "dsh-mobile-apk"
 if (-not (Test-Path $apkDir)) { $apkDir = $Root }
 
+# 补丁镜像一致性门禁（0.13.8 PR-A1 / apk #171 残留）：scripts/patches 是双仓镜像面
+# （云端自包含构建用 apk 仓副本），单边演进 = 云端快照静默缺引擎补丁（幽灵缺陷）。
+# registry / apply-patches / README 逐字节 + tests 清单，差异即拒打包。
+Write-Host "== 补丁镜像一致性门禁 =="
+node (Join-Path $Root "scripts\check-patch-mirror.mjs") 2>&1
+if ($LASTEXITCODE -ne 0) { Write-Host "补丁镜像不一致，拒绝打包（先同步镜像 scripts/patches 到对端树）"; exit 1 }
+
+# manifest 加固门禁（0.13.8 PR-B3 / apk #183）：allowBackup/NSC/接收器来源校验在场
+Write-Host "== manifest 加固门禁 =="
+node (Join-Path $Root "scripts\check-manifest-hardening.mjs") 2>&1
+if ($LASTEXITCODE -ne 0) { Write-Host "manifest 加固校验失败，拒绝打包"; exit 1 }
+
+# 子进程无界读 grep 门禁（0.13.8 #173）：输出必须走 ProcIo.readBounded
+Write-Host "== 有界读门禁 =="
+node (Join-Path $Root "scripts\check-bounded-io.mjs") 2>&1
+if ($LASTEXITCODE -ne 0) { Write-Host "无界读命中，拒绝打包"; exit 1 }
+
+# 控制协议 V2 往返 + 体积门禁（0.13.8 批 F / DESIGN-PROTOCOL-V2.md §S6）
+Write-Host "== 协议 V2 门禁 =="
+node (Join-Path $Root "scripts\check-protocol-v2.mjs") 2>&1
+if ($LASTEXITCODE -ne 0) { Write-Host "协议 V2 门禁失败，拒绝打包"; exit 1 }
+
+# 运行时补丁资产一致性门禁（0.13.8 收尾 / apk #170 复盘）：assets/patched/* 是引擎启动时
+# 覆盖运行树的预打补丁副本，必须与快照同源——否则「构建期 marker 全绿、设备上补丁被改回去」。
+Write-Host "== 运行时补丁资产门禁 =="
+node (Join-Path $Root "scripts\check-runtime-assets.mjs") 2>&1
+if ($LASTEXITCODE -ne 0) { Write-Host "运行时补丁资产过期，拒绝打包（从快照重新生成 assets/patched）"; exit 1 }
+
 # pi-ai 目录 diff（0.13.3 W1/P2）：baseline -> pin 信息性输出（构建日志 + 报告文件），
 # 删除清单供回归报告引用——不拒绝构建（删除项由 W4 降级补丁兜底）。
 $overlayManifest = Join-Path $Root "scripts\snapshot-config\engine-overlay.json"

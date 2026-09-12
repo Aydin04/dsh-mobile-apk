@@ -6,9 +6,9 @@ import android.view.View
 import java.io.File
 
 /**
- * 引擎启动流与Failed分支（自 MainActivity 拆出）：启动/解压/轮询编排、启动Failed自动重试、
+ * 引擎启动流与失败分支（自 MainActivity 拆出）：启动/解压/轮询编排、启动失败自动重试、
  * 自动回撤（UndoGate）、在线更新检查、开发者选项关闭/重启，以及前台引擎监控与
- * WebView 渲染进程冻结看门狗（两者均为「引擎不可用→回退测试界面」的Failed分支）。
+ * WebView 渲染进程冻结看门狗（两者均为「引擎不可用→回退测试界面」的失败分支）。
  * Activity 生命周期入口（onCreate/onResume/onDestroy/onPageFinished）经 MainActivity 委托调用。
  */
 internal class EngineStartFlow(private val activity: MainActivity) {
@@ -24,8 +24,8 @@ internal class EngineStartFlow(private val activity: MainActivity) {
   private val updateRunning = java.util.concurrent.atomic.AtomicBoolean(false)
   /** 重启引擎 in-flight 守卫（防连点双杀双启）。 */
   private val engineRestarting = java.util.concurrent.atomic.AtomicBoolean(false)
-  /** #118 建议7（2026-09）：启动Failed自动重试（最多 2 次，5s/10s 间隔），
-   *  Failed不永远停在 Error 引导页等手动操作。手动重试（onStartEngine）归零计数。 */
+  /** #118 建议7（2026-09）：启动失败自动重试（最多 2 次，5s/10s 间隔），
+   *  失败不永远停在 Error 引导页等手动操作。手动重试（onStartEngine）归零计数。 */
   internal var engineRetryCount = 0
 
   /** Foreground liveness is deliberately conservative: a slow HTTP response is
@@ -62,7 +62,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
             } else if (activity.webView.visibility == View.VISIBLE) {
               engineMonitorFailures++
               if (engineMonitorFailures >= UI_DEAD_CONFIRMATIONS) {
-                activity.applyGuidePhase(GuidePhase.Recovering, "Engine not running, recovering automatically…")
+                activity.applyGuidePhase(GuidePhase.Recovering, "引擎未运行，正在自动恢复…")
                 activity.showGuide()
               }
             }
@@ -77,7 +77,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
   // Android 12 仍卡「Loading plugins…」且页面无诊断层 = 渲染进程 JS 主线程冻结，
   // 页面内看门狗定时器也跑不动）。evaluateJavascript 的 JS 在渲染进程执行，App
   // 主线程不受影响：主线程周期发 JS 心跳，回调不再返回即判渲染进程失活 →
-  // Toast Notice + 自动 reload 一次 + 记日志。 ——
+  // Toast 提示 + 自动 reload 一次 + 记日志。 ——
   private val freezeHandler = android.os.Handler(android.os.Looper.getMainLooper())
   private var jsAckAt = System.currentTimeMillis()
   private var pageLoadedAt = System.currentTimeMillis()
@@ -91,7 +91,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         LogCollector.log("dsh-shell", "webview JS 无响应，渲染进程冻结（frozenMs=" + (now - jsAckAt) + "）")
         try {
           android.widget.Toast.makeText(
-            activity, "Page unresponsive, reloading…", android.widget.Toast.LENGTH_LONG,
+            activity, "页面无响应，正在自动刷新…", android.widget.Toast.LENGTH_LONG,
           ).show()
         } catch (_: Exception) {
         }
@@ -143,13 +143,13 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     if (!updateRunning.compareAndSet(false, true)) return
     activity.guideRenderer.chrome.updateButton.isEnabled = false
     activity.guideRenderer.chrome.updateButton.alpha = 0.55f
-    activity.applyGuidePhase(GuidePhase.Updating, "Checking for updates…")
+    activity.applyGuidePhase(GuidePhase.Updating, "检查更新…")
     UpdateManager(activity).checkAndApply { status ->
       activity.runOnUiThread {
-        val done = status.startsWith("Update completed") || status.startsWith("Update failed")
+        val done = status.startsWith("更新完成") || status.startsWith("更新失败")
         activity.applyGuidePhase(
-          if (status.startsWith("Update failed")) GuidePhase.Error
-          else if (status.startsWith("Update completed")) GuidePhase.Recovering
+          if (status.startsWith("更新失败")) GuidePhase.Error
+          else if (status.startsWith("更新完成")) GuidePhase.Recovering
           else GuidePhase.Updating,
           status,
         )
@@ -171,7 +171,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     freezeHandler.removeCallbacks(freezeRunnable)
     activity.runOnUiThread {
       activity.hideSoftInput()
-      activity.applyGuidePhase(GuidePhase.Closed, "Engine stopped")
+      activity.applyGuidePhase(GuidePhase.Closed, "引擎已关闭")
       activity.showGuide()
     }
     try { EngineService.instance?.requestShutdown() } catch (_: Exception) {
@@ -183,7 +183,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     LogCollector.log("dsh-shell", "harness closed via dev options (shutdownToGuide)")
   }
 
-  /** 引擎启动超时/Failed后进入自动回撤流程：UndoGate 幂等，安全多次调用。 */
+  /** 引擎启动超时/失败后进入自动回撤流程：UndoGate 幂等，安全多次调用。 */
   private fun maybeAutoUndo(generation: Long) {
     if (activity.userClosedEngine) return
     Thread {
@@ -215,10 +215,10 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     }.start()
   }
 
-  /** 引擎启动超时（startEngineFlow 轮询Failed后调用）：触发自动回撤。 */
+  /** 引擎启动超时（startEngineFlow 轮询失败后调用）：触发自动回撤。 */
   private fun onEngineStartTimeout(generation: Long) {
     // 先给看门狗一次机会：WatchdogV2 熔断阈值(12)远高于此处的保守阈值(6)，
-    // 因此本路径只在「启动即Failed」时触发；正常慢启动不会到达这里。
+    // 因此本路径只在「启动即失败」时触发；正常慢启动不会到达这里。
     maybeAutoUndo(generation)
   }
 
@@ -230,7 +230,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     val attempt = engineRetryCount
     activity.runOnUiThread {
       if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-      activity.applyGuidePhase(GuidePhase.Starting, "引擎启动Failed，${delayMs / 1000}s 后自动重试（第 $attempt/2 次）")
+      activity.applyGuidePhase(GuidePhase.Starting, "引擎启动失败，${delayMs / 1000}s 后自动重试（第 $attempt/2 次）")
       activity.showGuide()
     }
     engineMonitorHandler.postDelayed({
@@ -261,10 +261,10 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         return@Thread
       }
       if (!isCurrentEngineFlow(generation)) return@Thread
-      // 启动即有反馈：进入测试界面显示"Starting engine…"（不再白屏等 probe）。
+      // 启动即有反馈：进入测试界面显示"正在启动引擎…"（不再白屏等 probe）。
       activity.runOnUiThread {
         if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-        activity.applyGuidePhase(GuidePhase.Starting, "Starting engine…")
+        activity.applyGuidePhase(GuidePhase.Starting, "正在启动引擎…")
         activity.showGuide()
       }
       // Resolve a runtime transaction interrupted by a kill, an OEM cleaner or a
@@ -275,9 +275,9 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         if (!isCurrentEngineFlow(generation)) return@Thread
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Extracting, "Extracting runtime")
+          activity.applyGuidePhase(GuidePhase.Extracting, "正在解压运行时")
           activity.guideRenderer.progressText.visibility = View.VISIBLE
-          activity.guideRenderer.progressText.text = "Preparing embedded environment…"
+          activity.guideRenderer.progressText.text = "准备写入内嵌环境…"
         }
         val ok = activity.engineManager.refreshSnapshot(
           onProgress = { done, _ ->
@@ -286,16 +286,16 @@ internal class EngineStartFlow(private val activity: MainActivity) {
               // done 是解压后字节数，total 是压缩包字节数，口径不一致；只显示已解压量。
               val mb = done / 1024 / 1024
               activity.guideRenderer.progressText.visibility = View.VISIBLE
-              activity.guideRenderer.progressText.text = "Extracted " + mb + " MB"
+              activity.guideRenderer.progressText.text = "已写入 " + mb + " MB"
               if (activity.guideRenderer.lastGuidePhase != GuidePhase.Extracting) {
-                activity.applyGuidePhase(GuidePhase.Extracting, "Extracting runtime")
+                activity.applyGuidePhase(GuidePhase.Extracting, "正在解压运行时")
               }
             }
           },
           onStage = { stage ->
             activity.runOnUiThread {
               if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-              activity.applyGuidePhase(GuidePhase.Extracting, "Updating runtime")
+              activity.applyGuidePhase(GuidePhase.Extracting, "正在更新运行时")
               activity.guideRenderer.progressText.visibility = View.VISIBLE
               activity.guideRenderer.progressText.text = stage
             }
@@ -304,29 +304,29 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         if (!ok) {
           activity.runOnUiThread {
             if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-            // 0.13.1 W3：Extraction failed此前零落盘（engine.log 尚不存在、仅 logcat），镜像现场到共享目录。
+            // 0.13.1 W3：解压失败此前零落盘（engine.log 尚不存在、仅 logcat），镜像现场到共享目录。
             activity.engineManager.mirrorDiagnosticsToShared("snapshot-refresh-failed")
-            activity.applyGuidePhase(GuidePhase.Error, "Runtime update failed (diagnostics saved to Documents/dshdata/diagnostics)")
+            activity.applyGuidePhase(GuidePhase.Error, "运行时更新失败（诊断包已存至 Documents/dshdata/diagnostics）")
             activity.showGuide()
           }
           return@Thread
         }
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Starting, "Starting engine…")
+          activity.applyGuidePhase(GuidePhase.Starting, "正在启动引擎…")
         }
       }
       if (!isCurrentEngineFlow(generation)) return@Thread
-      // 急救 CLI 随 App 版本部署（内容比对幂等）：下探Failed时自动回撤的前置依赖。
+      // 急救 CLI 随 App 版本部署（内容比对幂等）：下探失败时自动回撤的前置依赖。
       activity.engineManager.deployUndoCli()
       if (!activity.engineManager.startEngine()) {
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Error, "引擎启动Failed")
+          activity.applyGuidePhase(GuidePhase.Error, "引擎启动失败")
           activity.showGuide()
         }
         maybeAutoUndo(generation)
-        // #118 建议7：Failed不清零计数时自动重试（Error 页不再需要手动点重试）。
+        // #118 建议7：失败不清零计数时自动重试（Error 页不再需要手动点重试）。
         scheduleEngineRetry(generation)
         return@Thread
       }
@@ -344,10 +344,13 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         if (!isCurrentEngineFlow(generation)) return@Thread
         if (EngineProbe.check().optBoolean("running", false)) {
           booted = true
+          // 0.13.8 #174：引擎就绪钩子——补投冷启动期间待发的来件通知（拷贝完成时
+          // 引擎尚未 listen 的竞态路径；fail-soft，失败留在待发清单等下一轮）。
+          try { FileIncoming.flushPending(activity) } catch (_: Throwable) {}
           break
         }
         if (!activity.engineManager.engineProcessAlive()) {
-          // 引擎进程已死：宣判Failed（自动回退路径），不再空等。
+          // 引擎进程已死：宣判失败（自动回退路径），不再空等。
           break
         }
         waitedSeconds = ((budgetEnd - System.currentTimeMillis()) / pollStepMs).toInt()
@@ -355,7 +358,7 @@ internal class EngineStartFlow(private val activity: MainActivity) {
           val s = waitedSeconds
           activity.runOnUiThread {
             if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-            activity.applyGuidePhase(GuidePhase.Starting, "Starting engine (waited ${60 - s}s, cold boot may take longer)")
+            activity.applyGuidePhase(GuidePhase.Starting, "引擎启动中（已等待 ${60 - s}s，冷启动较慢属正常）")
           }
         }
         Thread.sleep(pollStepMs)
@@ -366,11 +369,11 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         activity.engineManager.mirrorDiagnosticsToShared("engine-died-during-boot")
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Error, "Engine failed to start (diagnostics saved to Documents/dshdata/diagnostics)")
+          activity.applyGuidePhase(GuidePhase.Error, "引擎启动失败（诊断包已存至 Documents/dshdata/diagnostics）")
           activity.showGuide()
         }
         onEngineStartTimeout(generation)
-        // #118 建议7：进程死亡路径同样自动重试（可自愈的瞬时Failed不必停在Error页）。
+        // #118 建议7：进程死亡路径同样自动重试（可自愈的瞬时失败不必停在错误页）。
         scheduleEngineRetry(generation)
         return@Thread
       }
@@ -379,11 +382,15 @@ internal class EngineStartFlow(private val activity: MainActivity) {
         applyShizukuKeepAlive()
         activity.runOnUiThread { if (isCurrentEngineFlow(generation)) activity.showWeb() }
       } else {
-        // 进程还活着但 90s 内未就绪（异常慢）：灰色Notice而非红色Error，不触发回退——
+        // 进程还活着但 90s 内未就绪（异常慢）：灰色提示而非红色错误，不触发回退——
         // 引擎仍在启动，3s engineMonitorRunnable 会兜底切界面。
+        // 0.13.8 #175：终点不再「只提示」——安排一次自动重试（DEGRADED_HTTP 阶梯随后
+        // 兜底：若 HTTP 持续失败而端口可连，看门狗会受控重启，不再永久停留灰字）。
+        LogCollector.log("dsh-shell", "engine boot window exceeded 90s; scheduling retry (half-dead ladder will take over if HTTP stays failing)")
+        scheduleEngineRetry(generation)
         activity.runOnUiThread {
           if (!isCurrentEngineFlow(generation)) return@runOnUiThread
-          activity.applyGuidePhase(GuidePhase.Starting, "Engine starting slowly (>90s), continuing in background…")
+          activity.applyGuidePhase(GuidePhase.Starting, "引擎启动较慢（已超过 90s），已安排自动重试…")
         }
       }
       return@Thread
@@ -404,8 +411,8 @@ internal class EngineStartFlow(private val activity: MainActivity) {
     manager.checkAndApply { status ->
       activity.runOnUiThread {
         val phase = when {
-          status.startsWith("Update failed") -> GuidePhase.Error
-          status.startsWith("Update completed") -> GuidePhase.Recovering
+          status.startsWith("更新失败") -> GuidePhase.Error
+          status.startsWith("更新完成") -> GuidePhase.Recovering
           else -> GuidePhase.Updating
         }
         activity.applyGuidePhase(phase, status)

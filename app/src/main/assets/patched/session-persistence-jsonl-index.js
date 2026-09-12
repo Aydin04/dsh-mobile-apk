@@ -2033,8 +2033,19 @@ async function publishCurrentExclusive(staged, currentPath, internals) {
 	} catch (error) {
 		/* v8 ignore else -- a non-collision filesystem error propagates unchanged. */
 		if (isEEXIST(error)) return false;
-		/* v8 ignore next -- the filesystem error is already complete. */
-		throw error;
+		/* dsh-mobile link->rename fallback: Android app-private dirs reject link(2) (EACCES). */
+		if (!(error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM" || error.code === "ENOTSUP"))) throw error;
+				/* dsh-mobile exclusive publish (F7): rename() silently replaces an existing target, so the
+		   EEXIST semantics link(2) gave us would vanish. Claim the destination with O_EXCL first:
+		   the loser gets EEXIST here and reports false, exactly like the link path. */
+		try {
+		  const claim = await open(currentPath, "wx");
+		  await claim.close();
+		} catch (claimError) {
+		  if (claimError instanceof Error && "code" in claimError && claimError.code === "EEXIST") return false;
+		  throw claimError;
+		}
+		await rename(staged, currentPath);
 	}
 	await syncDirectory(dirname(currentPath), internals);
 	return true;

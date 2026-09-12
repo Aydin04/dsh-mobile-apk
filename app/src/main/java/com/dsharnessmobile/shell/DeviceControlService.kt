@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * 安全边界：
  *  - 只服务本应用引擎（127.0.0.1:3080）的请求，且请求必须带共享令牌；
- *  - 动作按**路径回指**（不是持久节点引用）：路径失效即Failed关闭，绝不猜测性点击；
+ *  - 动作按**路径回指**（不是持久节点引用）：路径失效即失败关闭，绝不猜测性点击；
  *  - 不做账号接管/验证码/支付；不隐藏自动化信号。
  */
 class DeviceControlService : AccessibilityService() {
@@ -46,6 +46,8 @@ class DeviceControlService : AccessibilityService() {
      *  prefs 里的 a11yEnabled 会变成「僵尸 true」；引擎侧只认新鲜心跳。 */
     const val KEY_HEARTBEAT = "controlHeartbeat"
     private const val MAX_NODES = 4000
+    /** 0.13.8 E2：建树时间预算（ms）——超过返回部分树 + truncated 标注。 */
+    private const val TREE_BUDGET_MS = 3_000L
     private const val MAX_DEPTH = 40
     private const val TOKEN_BYTES = 18
 
@@ -214,13 +216,13 @@ class DeviceControlService : AccessibilityService() {
       val restricted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
       return JSONObject()
         .put("enabled", enabled)
-        .put("label", "DSH Device Control")
+        .put("label", "DSH 设备控制")
         .put("sdk", Build.VERSION.SDK_INT)
         .put("restrictedSettingsApplies", restricted)
         .put(
           "hint",
-          if (enabled) "Accessibility service enabled: semantic tree + performAction"
-          else "未开启：到 系统设置 → 无障碍 → 已下载的服务 里开启「DSH Device Control」",
+          if (enabled) "无障碍服务已开启：设备控制走无障碍通道（语义树 + performAction）"
+          else "未开启：到 系统设置 → 无障碍 → 已下载的服务 里开启「DSH 设备控制」",
         )
         .put("tokenConfigured", !context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_TOKEN, null).isNullOrEmpty())
         .toString()
@@ -228,7 +230,7 @@ class DeviceControlService : AccessibilityService() {
 
     /**
      * 控制队列共享令牌（壳生成一次、持久化到 dsh-adb.xml；引擎插件 live 读）。
-     * 只在服务连接后可见——未开启无障碍时引擎侧拿不到令牌，控制路由自然Failed关闭。
+     * 只在服务连接后可见——未开启无障碍时引擎侧拿不到令牌，控制路由自然失败关闭。
      */
     fun token(context: Context): String {
       val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -258,17 +260,25 @@ class DeviceControlService : AccessibilityService() {
 
   /** 最近一次快照：路径 → 节点/边界。节点对象不跨快照使用（页面变化即失效）。 */
   private class Snapshot(
-    val gen: Int,
+    // 0.13.8 E4：gen 用秒级时间戳播种（Long）——服务重连后计数从 0 回绕曾让旧缓存
+    // 「假新鲜」（同一 gen 判定通过 → 按失效快照点击）。时间戳单调，杜绝回绕。
+    val gen: Long,
     val rotation: Int,
     val width: Int,
     val height: Int,
     val nodes: LinkedHashMap<String, AccessibilityNodeInfo>,
     val bounds: HashMap<String, Rect>,
+    /** 0.13.8 F1b（协议 V2）：真树 DFS 前序行表（**含零尺寸节点**——骨架连续性与深度
+     *  连续性的前提，V1 的 nodes 只留有尺寸节点）。纯数据，动作回指用 childPath 重定位。 */
+    val rows: List<ControlProtocolV2.Row> = emptyList(),
+    // 0.13.8 E2：建树时间预算触发 → 部分树 + 显式标注（宁可标注过的半棵树，不给一句超时）
+    val truncated: Boolean = false,
   )
 
   private val lock = Any()
   private var snapshot: Snapshot? = null
-  private val generation = AtomicInteger(0)
+  // 0.13.8 E4：秒级时间戳播种（Long，单调不回绕）
+  private val generation = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis() / 1000)
   /** issue #127 一次性迁移标记：旧截图目录 files/control-shots 只清一次。 */
   private val legacyShotDirCleaned = java.util.concurrent.atomic.AtomicBoolean(false)
   @Volatile
@@ -279,6 +289,11 @@ class DeviceControlService : AccessibilityService() {
 
   private var poller: ControlPoller? = null
 
+  /** 0.13.8 E4：服务代次（onServiceConnected 递增；诊断用——重连后缓存全部作废的观测点）。 */
+  @Volatile
+  var serviceEpoch: Int = 0
+    private set
+
   /** 主线程 Handler：无障碍 API 的回调都在主线程（takeScreenshot 需要 Executor）。 */
   private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
@@ -288,6 +303,9 @@ class DeviceControlService : AccessibilityService() {
     setEnabledFlag(this, true)
     token(this)
     invalidated = true
+    // 0.13.8 #181：先停旧代 poller 再起新代——直接覆盖引用会让旧 daemon 线程
+    // 永不可停（进程内长期双轮询，同一请求可能被两个 poller 相继取走）。
+    poller?.stop()
     val p = ControlPoller(this)
     poller = p
     p.start()
@@ -340,23 +358,60 @@ class DeviceControlService : AccessibilityService() {
       val root = rootInActiveWindow ?: return null
       val nodes = LinkedHashMap<String, AccessibilityNodeInfo>()
       val bounds = HashMap<String, Rect>()
+      val rows = ArrayList<ControlProtocolV2.Row>(512)
       var count = 0
-      fun walk(node: AccessibilityNodeInfo?, path: String, depth: Int) {
+      // 0.13.8 E2：建树时间预算（3s）——超预算返回部分树并显式标注 truncated，
+      // 宁可给一棵标注过的半棵树，也不给一句超时（V2 §4.1）。
+      var truncated = false
+      val deadline = android.os.SystemClock.uptimeMillis() + TREE_BUDGET_MS
+      fun walk(node: AccessibilityNodeInfo?, path: String, childPath: IntArray, depth: Int) {
         if (node == null || depth > MAX_DEPTH || count >= MAX_NODES) return
+        if (!truncated && android.os.SystemClock.uptimeMillis() > deadline) {
+          truncated = true
+          return
+        }
+        if (truncated) return
         val rect = Rect()
         node.getBoundsInScreen(rect)
+        var flag = 0
+        if (node.isClickable) flag = flag or ControlProtocolV2.F_CLICKABLE
+        if (node.isScrollable) flag = flag or ControlProtocolV2.F_SCROLLABLE
+        if (node.isEditable) flag = flag or ControlProtocolV2.F_EDITABLE
+        if (node.isChecked) flag = flag or ControlProtocolV2.F_CHECKED
+        if (node.isVisibleToUser) flag = flag or ControlProtocolV2.F_VISIBLE
+        if (node.isFocused) flag = flag or ControlProtocolV2.F_FOCUSED
+        if (node.isSelected) flag = flag or ControlProtocolV2.F_SELECTED
+        if (node.isEnabled) flag = flag or ControlProtocolV2.F_ENABLED
+        rows.add(
+          ControlProtocolV2.Row(
+            path = path,
+            childPath = childPath,
+            depth = depth,
+            x = rect.left, y = rect.top, w = rect.width(), h = rect.height(),
+            flag = flag,
+            cls = node.className?.toString() ?: "",
+            pkg = node.packageName?.toString() ?: "",
+            rid = node.viewIdResourceName ?: "",
+            windowId = node.windowId.toString(),
+            text = node.text?.toString() ?: "",
+            desc = node.contentDescription?.toString() ?: "",
+          ),
+        )
         if (rect.width() > 0 && rect.height() > 0) {
           nodes[path] = node
           bounds[path] = rect
           count++
         }
         for (i in 0 until node.childCount) {
-          walk(node.getChild(i), if (path.isEmpty()) i.toString() else "$path.$i", depth + 1)
+          walk(node.getChild(i), if (path.isEmpty()) i.toString() else "$path.$i", childPath + i, depth + 1)
         }
       }
-      walk(root, "", 0)
+      walk(root, "", IntArray(0), 0)
       val metrics = screenSize()
-      val fresh = Snapshot(generation.incrementAndGet(), rotation(), metrics.first, metrics.second, nodes, bounds)
+      val fresh = Snapshot(
+        generation.incrementAndGet(), rotation(), metrics.first, metrics.second,
+        nodes, bounds, rows, truncated,
+      )
       snapshot = fresh
       invalidated = false
       return fresh
@@ -401,11 +456,12 @@ class DeviceControlService : AccessibilityService() {
 
   // ── 动作 ──────────────────────────────────────────────────────────────
 
-  /** 执行一个队列请求；返回 null 表示Success（数据由调用方组装）。 */
+  /** 执行一个队列请求；返回 null 表示成功（数据由调用方组装）。 */
   fun handle(op: String, args: JSONObject): JSONObject {
     return when (op) {
-      "snapshot" -> handleSnapshot()
+      "snapshot" -> handleSnapshot(args)
       "click" -> handleClick(args)
+      "longClick" -> handleLongClick(args)
       "setText" -> handleSetText(args)
       "scroll" -> handleScroll(args)
       "global" -> handleGlobal(args)
@@ -414,7 +470,7 @@ class DeviceControlService : AccessibilityService() {
       "nodeText" -> handleNodeText(args)
       "webSnapshot" -> handleWebSnapshot(args)
       "webAction" -> handleWebAction(args)
-      else -> error("Unknown operation $op")
+      else -> error("未知操作 $op")
     }
   }
 
@@ -425,7 +481,7 @@ class DeviceControlService : AccessibilityService() {
    */
   private fun handleScreenshot(args: JSONObject): JSONObject {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-      return error("Accessibility screenshot requires Android 11+ (API 30+)")
+      return error("无障碍截屏需要 Android 11（API 30）及以上；本机 API ${Build.VERSION.SDK_INT}——请改用 ADB 通道（screencap）")
     }
     // 一次性迁移（issue #127）：≤0.13.5 把截图落在 files/control-shots（引擎读不到），
     // 升级后清掉旧目录，避免历史残留长期占位。
@@ -441,7 +497,7 @@ class DeviceControlService : AccessibilityService() {
         try {
           val bitmap = android.graphics.Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
           if (bitmap == null) {
-            payload = error("Screenshot bitmap decoded as null")
+            payload = error("截屏位图解码为空")
           } else {
             // 落引擎可读目录（EngineManager 把 TMPDIR 设为 files/home/tmp，管理插件
             // 的 dsh-tmp 同源）——此前落在 files/control-shots，引擎 read_image 打不开
@@ -458,7 +514,7 @@ class DeviceControlService : AccessibilityService() {
             payload = JSONObject().put("path", file.absolutePath).put("width", width).put("height", height)
           }
         } catch (t: Throwable) {
-          payload = error("Screenshot processing failed: " + (t.message ?: t.javaClass.simpleName))
+          payload = error("截屏处理失败：" + (t.message ?: t.javaClass.simpleName))
         } finally {
           try { screenshot.hardwareBuffer.close() } catch (_: Throwable) { /* 忽略 */ }
           latch.countDown()
@@ -467,14 +523,14 @@ class DeviceControlService : AccessibilityService() {
 
       override fun onFailure(errorCode: Int) {
         val hint = when (errorCode) {
-          ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "Internal error"
-          ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "Accessibility access not ready"
-          ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "Rate limit exceeded (min interval ~333ms)"
-          ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "Invalid display id"
+          ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "内部错误"
+          ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "无障碍访问未就绪"
+          ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "调用过频（需间隔约 333ms）"
+          ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "无效的显示 id"
           ERROR_TAKE_SCREENSHOT_SECURE_WINDOW -> "当前窗口禁止截屏（FLAG_SECURE）"
-          else -> "Error码 $errorCode"
+          else -> "错误码 $errorCode"
         }
-        payload = error("截屏Failed：$hint")
+        payload = error("截屏失败：$hint")
         latch.countDown()
       }
     })
@@ -487,17 +543,17 @@ class DeviceControlService : AccessibilityService() {
    * 比整树快照便宜得多——现场实测「注入后回读断言」是输入链路唯一可靠的闭环。
    */
   private fun handleNodeText(args: JSONObject): JSONObject {
-    val path = args.optString("path", "")
-    val node: AccessibilityNodeInfo = if (path.isNotEmpty()) {
-      nodeAtPath(path) ?: return error("路径 $path 已不存在（页面已变化）")
-    } else {
-      findFocusedEditable() ?: return error("没有聚焦的输入框——请先点击目标输入框，或用 path 指定")
+    val target = resolveTarget(args)
+    val node: AccessibilityNodeInfo = when (target) {
+      is Target.Miss -> return target.error
+      is Target.Hit -> target.node
+      Target.None -> findFocusedEditable() ?: return error("没有聚焦的输入框——请先点击目标输入框，或用 row/ref 指定")
     }
     return JSONObject()
       .put("text", node.text?.toString() ?: "")
       .put("desc", node.contentDescription?.toString() ?: "")
       .put("editable", node.isEditable)
-      .put("path", path)
+      .put("target", if (target is Target.Hit) target.label else "focus")
   }
 
   /**
@@ -547,83 +603,126 @@ class DeviceControlService : AccessibilityService() {
     if (!latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
       return error("WebView DOM 求值超时（${timeoutMs}ms）")
     }
-    val raw = holder[0] ?: return error("WebView DOM 求值Failed（页面可能正在跳转）")
+    val raw = holder[0] ?: return error("WebView DOM 求值失败（页面可能正在跳转）")
     val json = if (raw.startsWith("\"")) {
       try { org.json.JSONTokener(raw).nextValue() as? String } catch (_: Throwable) { null }
     } else {
       raw
     }
     if (json.isNullOrBlank()) return error("WebView DOM 求值返回空")
-    return try { JSONObject(json) } catch (t: Throwable) { error("WebView DOM 结果解析Failed：" + (t.message ?: "?")) }
+    return try { JSONObject(json) } catch (t: Throwable) { error("WebView DOM 结果解析失败：" + (t.message ?: "?")) }
   }
 
   private fun error(message: String): JSONObject = JSONObject().put("__error", message)
 
-  private fun handleSnapshot(): JSONObject {
+  /**
+   * 快照（0.13.8 F1b：协议 V2 列式载荷）。
+   *
+   * V1 的「每节点 16 个键名 + 路径字符串 id」形态实测 428 B/节点，1 MiB 上限只能装约 150 节点；
+   * V2 列式（符号表 + 常数广播 + 整数句柄）压到 54.7 B/行（同探针 36,931 B → 4,704 B）。
+   * **壳侧只提供 V2 入口**（§S6.5 I-4：压缩只在源头，不提供「先发简版再补详版」的改写路径）；
+   * 老引擎（0.13.7 及以前）读不懂 V2 载荷——版本协商见 `caps`/`pv`（ControlPoller）。
+   *
+   * `view`（"all" | "target"）由引擎经请求下推（L1 降级阶梯：报文超限时先收窄口径）。
+   */
+  private fun handleSnapshot(args: JSONObject): JSONObject {
     val snap = buildSnapshot(force = true) ?: return error("无法获取当前窗口（rootInActiveWindow 为空）——请确认屏幕已点亮且有无障碍可读窗口")
-    val nodes = JSONArray()
-    for ((path, node) in snap.nodes) {
-      val rect = snap.bounds[path] ?: continue
-      val attrs = JSONObject()
-        .put("bounds", "[${rect.left},${rect.top}][${rect.right},${rect.bottom}]")
-        .put("class", node.className?.toString() ?: "")
-        .put("text", node.text?.toString() ?: "")
-        .put("content-desc", node.contentDescription?.toString() ?: "")
-        .put("resource-id", node.viewIdResourceName ?: "")
-        .put("clickable", node.isClickable.toString())
-        .put("scrollable", node.isScrollable.toString())
-        .put("editable", node.isEditable.toString())
-        .put("checked", node.isChecked.toString())
-        .put("visible-to-user", node.isVisibleToUser.toString())
-        .put("focused", node.isFocused.toString())
-        .put("selected", node.isSelected.toString())
-        .put("enabled", node.isEnabled.toString())
-        .put("depth", path.count { it == '.' })
-        .put("package", node.packageName?.toString() ?: "")
-        .put("window-id", node.windowId.toString())
-      nodes.put(JSONObject().put("id", path).put("parentId", path.substringBeforeLast('.', "")).put("attrs", attrs))
-    }
-    return JSONObject()
-      .put("gen", snap.gen)
-      .put("rotation", snap.rotation)
-      .put("screen", JSONObject().put("w", snap.width).put("h", snap.height))
-      .put("nodes", nodes)
+    val view = if (args.optString("view", "all") == "target") "target" else "all"
+    return ControlProtocolV2.encode(
+      rows = snap.rows,
+      view = view,
+      gen = snap.gen,
+      rotation = snap.rotation,
+      width = snap.width,
+      height = snap.height,
+      truncated = snap.truncated,
+    )
   }
 
-  /** 校验 gen（页面已变化时Failed关闭）并返回目标节点。 */
+  /** 校验 gen（页面已变化时失败关闭）并返回目标节点。0.13.8 E4：-1 自愈重建 + Long gen。 */
   private fun requireFresh(args: JSONObject): JSONObject? {
-    val requested = if (args.has("gen")) args.optInt("gen", -1) else -1
+    val requested = if (args.has("gen")) args.optLong("gen", -1L) else -1L
     if (requested >= 0) {
-      val current = synchronized(lock) { snapshot?.gen ?: -1 }
-      if (current != requested) return error("控件清单已过期（gen=$requested，当前=$current）——请重新 android_ui_dump")
+      var current = synchronized(lock) { snapshot?.gen ?: -1L }
+      if (current == -1L) {
+        // 0.13.8 E4（V2 §4.4）：「无快照」≠「过期」——当场重建，路径仍在就继续执行；
+        // 原实现两者混为一谈且唯一补救恰是会超时的 dump → 死锁。
+        val rebuilt = buildSnapshot(force = true)
+        if (rebuilt == null) return error("无可用快照且当场重建失败（无障碍服务可能未连接）——请稍后重试或检查设备控制服务")
+        current = rebuilt.gen
+      }
+      if (current != requested) {
+        return error("控件清单已过期（gen=$requested，当前=$current）——界面已变化，请重新 android_ui_dump；不要按旧引用猜测性点击")
+      }
     }
     return null
   }
 
+  /** 动作目标解析结果：命中 / 明确失败（带回填错误）/ 未指定（走 nx/ny 坐标兜底）。 */
+  private sealed class Target {
+    class Hit(val node: AccessibilityNodeInfo, val label: String) : Target()
+    class Miss(val error: JSONObject) : Target()
+    object None : Target()
+  }
+
+  /**
+   * 动作目标节点（§S5.1 DD-10）：`row`（V2 行句柄）优先，`path`（V1 原始路径）兼容。
+   * 行句柄走 childPath 逐级 getChild 重定位——零字符串解析；两种寻址都失败时回填可诊断的失败原因。
+   */
+  private fun resolveTarget(args: JSONObject): Target {
+    if (args.has("row")) {
+      val handle = args.optInt("row", -1)
+      val rows = synchronized(lock) { snapshot?.rows } ?: return Target.Miss(error("没有快照——请重新 android_ui_dump"))
+      if (handle < 0 || handle >= rows.size) {
+        return Target.Miss(error("行句柄 $handle 超出快照范围（共 ${rows.size} 行）——请重新 android_ui_dump"))
+      }
+      val node = nodeAtChildPath(rows[handle].childPath)
+        ?: return Target.Miss(error("行 $handle 已不存在（页面已变化）——请重新 android_ui_dump"))
+      return Target.Hit(node, "row:$handle")
+    }
+    val path = args.optString("path", "")
+    if (path.isEmpty()) return Target.None
+    val node = nodeAtPath(path) ?: return Target.Miss(error("路径 $path 已不存在（页面已变化）——请重新 android_ui_dump"))
+    return Target.Hit(node, path)
+  }
+
+  /** 按子下标路径重定位节点（V2 行句柄寻址；逐级 getChild，无字符串解析）。 */
+  private fun nodeAtChildPath(childPath: IntArray): AccessibilityNodeInfo? {
+    var node: AccessibilityNodeInfo = rootInActiveWindow ?: return null
+    for (index in childPath) {
+      if (index < 0 || index >= node.childCount) return null
+      node = node.getChild(index) ?: return null
+    }
+    return node
+  }
+
   private fun handleClick(args: JSONObject): JSONObject {
     requireFresh(args)?.let { return it }
-    val path = args.optString("path", "")
-    if (path.isNotEmpty()) {
-      var node = nodeAtPath(path) ?: return error("路径 $path 已不存在（页面已变化）——请重新 android_ui_dump")
-      // 自身不可点 → 沿父链找可点祖先（与引擎侧回退策略一致的第二道保险）
-      var hops = 0
-      while (!node.isClickable && hops < 12) {
-        node = node.parent ?: break
-        hops++
-      }
-      if (node.isClickable) {
-        val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        if (ok) {
-          val rect = Rect()
-          node.getBoundsInScreen(rect)
-          return JSONObject().put("clicked", path).put("via", "ACTION_CLICK")
-            .put("x", rect.exactCenterX().toDouble()).put("y", rect.exactCenterY().toDouble())
+    when (val target = resolveTarget(args)) {
+      is Target.Miss -> return target.error
+      is Target.Hit -> {
+        var node = target.node
+        // 自身不可点 → 沿父链找可点祖先（与引擎侧回退策略一致的第二道保险）
+        var hops = 0
+        while (!node.isClickable && hops < 12) {
+          node = node.parent ?: break
+          hops++
         }
-        return error("ACTION_CLICK 被目标拒绝（path=$path）")
+        if (node.isClickable) {
+          val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+          if (ok) {
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            return JSONObject().put("clicked", target.label).put("via", "ACTION_CLICK")
+              .put("x", rect.exactCenterX().toDouble()).put("y", rect.exactCenterY().toDouble())
+          }
+          return error("ACTION_CLICK 被目标拒绝（${target.label}）")
+        }
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        return tapAt(rect.exactCenterX(), rect.exactCenterY(), "gesture-fallback")
       }
-      val rect = Rect()
-      node.getBoundsInScreen(rect)
-      return tapAt(rect.exactCenterX(), rect.exactCenterY(), "gesture-fallback")
+      Target.None -> Unit
     }
     if (args.has("nx") && args.has("ny")) {
       val metrics = screenSize()
@@ -631,7 +730,68 @@ class DeviceControlService : AccessibilityService() {
       val y = (args.optDouble("ny") * metrics.second).toFloat()
       return tapAt(x, y, "gesture-norm")
     }
-    return error("需要 path 或 nx/ny")
+    return error("需要 row（行句柄）或 nx/ny")
+  }
+
+  /** 手势长按（0.13.8 E6）：路径不移动、时长 durationMs——区别于 tapAt 的 60ms 点按。 */
+  private fun pressAt(x: Float, y: Float, durationMs: Long, via: String): JSONObject {
+    val path = Path().apply { moveTo(x, y) }
+    val gesture = GestureDescription.Builder()
+      .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+      .build()
+    val latch = java.util.concurrent.CountDownLatch(1)
+    var ok = false
+    val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+      override fun onCompleted(description: GestureDescription?) { ok = true; latch.countDown() }
+      override fun onCancelled(description: GestureDescription?) { latch.countDown() }
+    }, null)
+    if (!dispatched) return error("手势派发失败（无障碍服务未就绪）")
+    latch.await(durationMs + 2_000, java.util.concurrent.TimeUnit.MILLISECONDS)
+    return if (ok) JSONObject().put("clicked", "($x,$y)").put("via", via).put("durationMs", durationMs)
+      .put("x", x.toDouble()).put("y", y.toDouble())
+    else error("手势长按未完成（被系统取消）")
+  }
+
+  /**
+   * 长按（0.13.8 E6，V2 §4.2「长按三条通道全缺」修复的 a11y 支）：
+   * 优先 ACTION_LONG_CLICK（沿父链找可长按祖先），失败/不可点回退手势按住 durationMs
+   * （通用长按形态；传 durationMs 可覆盖，300-3000ms 钳制）。
+   */
+  private fun handleLongClick(args: JSONObject): JSONObject {
+    requireFresh(args)?.let { return it }
+    val durationMs = args.optLong("durationMs", 600L).coerceIn(300L, 3_000L)
+    when (val target = resolveTarget(args)) {
+      is Target.Miss -> return target.error
+      is Target.Hit -> {
+        var node = target.node
+        var hops = 0
+        while (hops < 12) {
+          if (node.isLongClickable) break
+          node = node.parent ?: break
+          hops++
+        }
+        if (node.isLongClickable) {
+          val ok = node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+          if (ok) {
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            return JSONObject().put("clicked", target.label).put("via", "ACTION_LONG_CLICK")
+              .put("x", rect.exactCenterX().toDouble()).put("y", rect.exactCenterY().toDouble())
+          }
+        }
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        return pressAt(rect.exactCenterX(), rect.exactCenterY(), durationMs, "gesture-longclick")
+      }
+      Target.None -> Unit
+    }
+    if (args.has("nx") && args.has("ny")) {
+      val metrics = screenSize()
+      val x = (args.optDouble("nx") * metrics.first).toFloat()
+      val y = (args.optDouble("ny") * metrics.second).toFloat()
+      return pressAt(x, y, durationMs, "gesture-norm-longclick")
+    }
+    return error("需要 row（行句柄）或 nx/ny")
   }
 
   private fun tapAt(x: Float, y: Float, via: String): JSONObject {
@@ -645,11 +805,11 @@ class DeviceControlService : AccessibilityService() {
       override fun onCompleted(description: GestureDescription?) { ok = true; latch.countDown() }
       override fun onCancelled(description: GestureDescription?) { latch.countDown() }
     }, null)
-    if (!dispatched) return error("手势派发Failed（无障碍服务未就绪）")
+    if (!dispatched) return error("手势派发失败（无障碍服务未就绪）")
     latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
     return if (ok) JSONObject().put("clicked", "($x,$y)").put("via", via)
       .put("x", x.toDouble()).put("y", y.toDouble())
-    else error("手势点击未完成（被系统Cancel）")
+    else error("手势点击未完成（被系统取消）")
   }
 
   /**
@@ -658,6 +818,7 @@ class DeviceControlService : AccessibilityService() {
    * 代次变化或 invalidated=true 即界面确实变了。
    */
   private fun handleState(): JSONObject = JSONObject()
+    .put("globals", org.json.JSONArray(availableGlobalActions() as Collection<*>))
     .put("gen", synchronized(lock) { snapshot?.gen ?: -1 })
     .put("invalidated", invalidated)
     .put("enabled", true)
@@ -676,11 +837,10 @@ class DeviceControlService : AccessibilityService() {
     requireFresh(args)?.let { return it }
     val text = args.optString("text", "")
     val clear = args.optBoolean("clear", false)
-    val path = args.optString("path", "")
-    val node: AccessibilityNodeInfo = if (path.isNotEmpty()) {
-      nodeAtPath(path) ?: return error("路径 $path 已不存在（页面已变化）")
-    } else {
-      findFocusedEditable() ?: return error("没有聚焦的输入框——请先点击目标输入框，或用 ref 指定")
+    val node: AccessibilityNodeInfo = when (val target = resolveTarget(args)) {
+      is Target.Miss -> return target.error
+      is Target.Hit -> target.node
+      Target.None -> findFocusedEditable() ?: return error("没有聚焦的输入框——请先点击目标输入框，或用 ref 指定")
     }
     if (!node.isEditable) {
       // 允许在容器上尝试一次（部分实现把 editable 标在子节点）
@@ -717,17 +877,18 @@ class DeviceControlService : AccessibilityService() {
     requireFresh(args)?.let { return it }
     val direction = args.optString("direction", "")
     if (direction !in listOf("up", "down", "left", "right")) return error("未知方向 $direction")
-    val path = args.optString("path", "")
-    val target: AccessibilityNodeInfo? = if (path.isNotEmpty()) {
-      var node = nodeAtPath(path) ?: return error("路径 $path 已不存在（页面已变化）")
-      var hops = 0
-      while (!node.isScrollable && hops < 12) {
-        node = node.parent ?: break
-        hops++
+    val target: AccessibilityNodeInfo? = when (val t = resolveTarget(args)) {
+      is Target.Miss -> return t.error
+      is Target.Hit -> {
+        var node = t.node
+        var hops = 0
+        while (!node.isScrollable && hops < 12) {
+          node = node.parent ?: break
+          hops++
+        }
+        node
       }
-      node
-    } else {
-      findFirstScrollable()
+      Target.None -> findFirstScrollable()
     }
     val action = when (direction) {
       "down" -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
@@ -777,7 +938,7 @@ class DeviceControlService : AccessibilityService() {
       override fun onCompleted(description: GestureDescription?) { ok = true; latch.countDown() }
       override fun onCancelled(description: GestureDescription?) { latch.countDown() }
     }, null)
-    if (!dispatched) return error("滚动手势派发Failed")
+    if (!dispatched) return error("滚动手势派发失败")
     latch.await(4, java.util.concurrent.TimeUnit.SECONDS)
     return if (ok) JSONObject().put("scrolled", direction).put("via", "gesture").put("fraction", fraction)
     else error("滚动手势未完成")
@@ -794,15 +955,33 @@ class DeviceControlService : AccessibilityService() {
     return walk(root, 0)
   }
 
+  /**
+   * 当前设备可用全局动作（目录与判定在 GlobalActionCatalog——纯函数、可单测）。
+   * 诊断面（state.globals）与失败回填共用。
+   */
+  fun availableGlobalActions(): List<String> =
+    GlobalActionCatalog.available(systemGlobalActionIds(), Build.VERSION.SDK_INT)
+
+  private fun systemGlobalActionIds(): Set<Int> = try {
+    getSystemActions()?.map { it.id }?.toSet() ?: emptySet()
+  } catch (_: Throwable) {
+    emptySet()
+  }
+
+  /** 全局动作（0.13.8 E6：getSystemActions 驱动；不可用时回可用清单，不静默失败）。 */
   private fun handleGlobal(args: JSONObject): JSONObject {
-    val action = when (args.optString("action", "")) {
-      "back" -> GLOBAL_ACTION_BACK
-      "home" -> GLOBAL_ACTION_HOME
-      "recents" -> GLOBAL_ACTION_RECENTS
-      "notifications" -> GLOBAL_ACTION_NOTIFICATIONS
-      else -> return error("未知全局动作")
+    val name = args.optString("action", "")
+    val available = availableGlobalActions()
+    val entry = GlobalActionCatalog.find(name)
+      ?: return error("未知全局动作 $name——可用：${available.joinToString(" / ")}")
+    if (!available.contains(entry.name)) {
+      return error(
+        "设备不支持全局动作 ${entry.name}" +
+          (if (Build.VERSION.SDK_INT < entry.minSdk) "（需要 Android API ${entry.minSdk}，本机 ${Build.VERSION.SDK_INT}）" else "（系统未报告该动作）") +
+          "——可用：${available.joinToString(" / ")}",
+      )
     }
-    val ok = performGlobalAction(action)
-    return if (ok) JSONObject().put("global", args.optString("action")) else error("全局动作被系统拒绝")
+    val ok = performGlobalAction(entry.id)
+    return if (ok) JSONObject().put("global", entry.name) else error("全局动作 ${entry.name} 被系统拒绝（执行返回 false）")
   }
 }

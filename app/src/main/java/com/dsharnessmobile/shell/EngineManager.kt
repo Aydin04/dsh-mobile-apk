@@ -106,14 +106,14 @@ class EngineManager(private val context: Context, private val pickToken: String?
     val stage = SnapshotTransaction.stageRoot(filesDir)
     EngineManager.snapshotRefreshing = true
     try {
-      onStage("Checking previous update…")
+      onStage("正在检查上次更新…")
       applyRecovery(SnapshotTransaction.recover(filesDir, stage, usrDir, homeDir, liveFingerprint()))
       if (snapshotFresh()) {
         // A rolled-forward transaction already activated this snapshot.
         return true
       }
 
-      onStage("Extracting runtime…")
+      onStage("正在解压运行时…")
       SnapshotFs.deletePath(stage)
       SnapshotFs.createDirectories(stage)
       if (!extractSnapshotTo(stage, onProgress)) {
@@ -127,14 +127,14 @@ class EngineManager(private val context: Context, private val pickToken: String?
         return false
       }
 
-      onStage("Restoring user data…")
+      onStage("正在恢复用户数据…")
       restoreLegacyUserData(File(homeDir, ".dsh"))
       // 0.13.5 W1a（issue #126 P1 的兜底诉求）：换树前留一份 settings.yaml 快照。
       // 事务化本身从不触碰用户数据，这份副本是「万一」时的取证/回滚来源——
-      // 只保留最近 3 代，写Failed仅告警（不阻断刷新）。
+      // 只保留最近 3 代，写失败仅告警（不阻断刷新）。
       snapshotSettingsBackup()
 
-      onStage("Finalizing runtime update…")
+      onStage("正在完成运行时更新…")
       SnapshotTransaction.writeMarker(
         filesDir,
         SnapshotTransaction.Marker(SnapshotTransaction.Phase.STAGED, fingerprint, startedAt),
@@ -147,7 +147,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
         preservedNames = SnapshotUserData.preservedNames.toSet(),
         fingerprint = fingerprint,
         startedAt = startedAt,
-        onEntry = { onStage("Updating " + it) },
+        onEntry = { onStage("正在更新 " + it) },
       )
       // Commit point: the fingerprint is durable only after the swap completed.
       writeFingerprint(fingerprint)
@@ -156,7 +156,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
       return true
     } catch (t: Throwable) {
       Log.e(TAG, "snapshot refresh failed; rolling back", t)
-      onStage("运行时Update failed，正在回滚…")
+      onStage("运行时更新失败，正在回滚…")
       try {
         val marker = SnapshotTransaction.readMarker(filesDir)
         if (marker != null) {
@@ -282,7 +282,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
    *
    * 事务化刷新本身从不移动/覆盖用户数据（[SnapshotTransaction] 跳过 preservedNames），
    * 这份副本回应 issue #126 P1 的诉求：升级出意外时至少有一份「升级前」的配置可取证/回滚。
-   * 写入Failed只告警——备份不是刷新的前置条件。
+   * 写入失败只告警——备份不是刷新的前置条件。
    */
   private fun snapshotSettingsBackup() {
     val source = File(File(homeDir, ".dsh"), "settings.yaml")
@@ -357,6 +357,29 @@ class EngineManager(private val context: Context, private val pickToken: String?
       if (skillFile.readText().trim() != PHONE_CONTROL_SKILL.trim()) {
         skillFile.writeText(PHONE_CONTROL_SKILL)
         Log.i(TAG, "phone-control SKILL refreshed")
+      }
+      // 0.13.8 #130/V2 P1-11：标准组合的 skill-filesystem 行没有 config——预设自带的
+      // skills 目录不在任何被扫描的 skill 根里，phone-control 的 SKILL 从未被加载
+      // （与缺 frontmatter 并列的两处缺陷之一）。结构化后处理：照抄上游 cordis 预设的
+      // 写法注入 customSkillDirs（指向本预设 skills/ 目录，baseUrl 相对解析）；
+      // 已注入则跳过（幂等）。置于 preset.yml 早退之前——存量用户的升级路径也覆盖。
+      val composition = File(dir, "agent.cordis.yml")
+      if (composition.exists()) {
+        val text = composition.readText()
+        if (text.contains("- id: skill-filesystem") && !text.contains("customSkillDirs")) {
+          val anchor = "- id: skill-filesystem\n  name: '@deepseek-ai/dsh-skill-filesystem'"
+          val injected = anchor + "\n" +
+            "  config:\n" +
+            "    customSkillDirs:\n" +
+            "      - !!js \"process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))\""
+          val patched = text.replace(anchor, injected)
+          if (patched != text) {
+            composition.writeText(patched)
+            Log.i(TAG, "phone-control preset: customSkillDirs injected into skill-filesystem row")
+          } else {
+            Log.w(TAG, "phone-control preset: skill-filesystem anchor not found; customSkillDirs not injected")
+          }
+        }
       }
       if (File(dir, "preset.yml").exists()) return
       val shipped = File(
@@ -531,9 +554,10 @@ class EngineManager(private val context: Context, private val pickToken: String?
           "  exports/                 会话与配置的导出物\n" +
           "    config/settings.yaml   配置导出（设置 > 开发者选项 > 导出配置 生成）\n" +
           "                           修改本文件后点「导入配置」即可生效（无需重装）\n" +
-          "  log/                     开发者调试日志（默认关，设置 > 开发者选项 开启）\n" +
-          "  diagnostics/             启动Failed/崩溃时自动生成的诊断包（engine.log + 环境信息 + logcat），\n" +
-          "                           反馈 issue 时直接整目录打包上传即可\n\n" +
+          "  log/                     开发者调试日志（默认关，设置 > 开发者选项 开启；含令牌脱敏，"
+            + "但仍有命令与模型内容）\n" +
+          "  diagnostics/             启动失败/崩溃时自动生成的诊断包（engine.log 脱敏副本 + 环境信息 + logcat），\n" +
+          "                           令牌已替换为 ***，反馈 issue 时直接整目录打包上传即可\n\n" +
           "改配置的正确途径：设置界面各项开关；或 导出配置 -> 文件管理器编辑 -> 导入配置；\n" +
           "进阶：设置 > 开发者选项 > 打开控制台（快照内 bash，可直接 vi settings.yaml）。\n",
       )
@@ -686,9 +710,15 @@ class EngineManager(private val context: Context, private val pickToken: String?
     val engineReachable = EngineProbe.portReachable(1_000)
     val managedProcessAlive = engineProcess?.isAlive == true
     if (!force && (engineReachable || managedProcessAlive)) {
-      STARTING.set(false)
-      LogCollector.log(TAG, "engine start skipped (existing engine reachable or alive)")
-      return true
+      // 0.13.8 #175：DEGRADED_HTTP 阶梯触发时，「端口可连」不再是健康证据——半死引擎
+      // 必须允许重启（看门狗/重试路径不带 force 也能走到这里）。
+      if (WatchdogV2.degradedHttpTripped()) {
+        LogCollector.log(TAG, "engine start allowed despite reachable port: DEGRADED_HTTP ladder tripped (half-dead engine)")
+      } else {
+        STARTING.set(false)
+        LogCollector.log(TAG, "engine start skipped (existing engine reachable or alive)")
+        return true
+      }
     }
     if (withinCooldown) {
       LogCollector.log(TAG, "engine start retrying after the tracked child exited during cooldown")
@@ -716,12 +746,46 @@ class EngineManager(private val context: Context, private val pickToken: String?
     } catch (t: Throwable) {
       Log.e(TAG, "engine start failed", t)
       LogCollector.log(TAG, "engine start FAILED: " + (t.message ?: t.javaClass.simpleName))
-      // 0.13.1 W3：Failed现场镜像到共享目录（此前 engine.log 只在私有域，外界拿不到）。
+      // 0.13.1 W3：失败现场镜像到共享目录（此前 engine.log 只在私有域，外界拿不到）。
       mirrorDiagnosticsToShared("engine-spawn-failed")
       false
     } finally {
       STARTING.set(false)
     }
+  }
+
+  /**
+   * Absolute path of the Host settings document (`$DSH_HOME/settings.yaml`); empty when missing.
+   *
+   * apk #168：此前取的是**公共导出仓库** `Documents/dshdata/settings.yaml`——那不是配置的落点
+   * （配置在私有 `$DSH_HOME`），于是恒返回空串，页面侧接管直接放弃，「打开配置文件」在真机上
+   * 一直是坏的。这里换回单一来源。
+   */
+  fun settingsDocumentPath(): String {
+    val file = File(File(homeDir, ".dsh"), "settings.yaml")
+    return if (file.isFile) file.absolutePath else ""
+  }
+
+  /**
+   * apk #168 第二道坎：把活动 settings.yaml **复制到已放行的公共导出目录**并返回副本路径。
+   *
+   * 为什么不直接放行私有路径：`.dsh` 目录里还有 `.credentials.yaml` / deepseek-key.txt 等凭据，
+   * 放宽白名单或 FileProvider 映射会把凭据一并交给系统选择器（安全退化）。复制副本只暴露配置
+   * 本身，且副本落在既有白名单 `Documents/dshdata/exports` 内——选择器与 FileProvider 天然可用。
+   * 失败返回空串（调用方保持上游错误路径）。
+   */
+  fun settingsDocumentExport(): String = try {
+    val src = File(File(homeDir, ".dsh"), "settings.yaml")
+    if (!src.isFile) {
+      ""
+    } else {
+      val dir = File(File(dshDataDir, "exports"), "config").apply { mkdirs() }
+      val dst = File(dir, "settings.yaml")
+      src.copyTo(dst, overwrite = true)
+      dst.absolutePath
+    }
+  } catch (_: Throwable) {
+    ""
   }
 
   /** The app workspace root (files/home/.dsh/workspaces), created on demand; null when unusable. */
@@ -789,10 +853,10 @@ class EngineManager(private val context: Context, private val pickToken: String?
   }
 
   /**
-   * 0.13.1 W3：Failed诊断镜像（best-effort，绝不抛出）。把 engine.log 全世代 + 退出码 +
+   * 0.13.1 W3：失败诊断镜像（best-effort，绝不抛出）。把 engine.log 全世代 + 退出码 +
    * 环境/设备信息 + 最近 logcat 写入共享目录 Documents/dshdata/diagnostics/<时间戳>-<原因>/，
-   * 用户用文件管理器即可直接复制去反馈（此前全在私有目录，Failed时外界拿不到任何现场）。
-   * 触发点：spawn Failed / 进程死亡 / 健康检查超时 / 快照Extraction failed / UndoGate 急救。
+   * 用户用文件管理器即可直接复制去反馈（此前全在私有目录，失败时外界拿不到任何现场）。
+   * 触发点：spawn 失败 / 进程死亡 / 健康检查超时 / 快照解压失败 / UndoGate 急救。
    */
   fun mirrorDiagnosticsToShared(reason: String) {
     try {
@@ -800,20 +864,23 @@ class EngineManager(private val context: Context, private val pickToken: String?
       val dir = File(File(dshDataDir, "diagnostics"), ts + "-" + reason)
       if (!dir.mkdirs() && !dir.isDirectory) return
       val log = File(context.filesDir, "engine.log")
+      // 0.13.8 #184：诊断包落共享存储（任何持 All Files Access 的应用可读），engine.log
+      // 内含引擎 launch token——副本先过 redact，本体不动（壳侧鉴权链 tokenFromLog 依赖）。
       for (f in arrayOf(log, File(log.parentFile, "engine.log.1"), File(log.parentFile, "engine.log.2"))) {
         try {
-          if (f.exists()) f.copyTo(File(dir, f.name), overwrite = true)
+          if (f.exists()) File(dir, f.name).writeText(EngineAuth.redact(f.readText()))
         } catch (_: Throwable) {
         }
       }
       try {
-        File(dir, "info.txt").writeText(buildDiagnosticsText(reason))
+        File(dir, "info.txt").writeText(EngineAuth.redact(buildDiagnosticsText(reason)))
       } catch (_: Throwable) {
       }
       try {
         val p = ProcessBuilder("logcat", "-d", "-v", "threadtime", "-t", "400").redirectErrorStream(true).start()
-        val out = p.inputStream.readBytes()
-        if (out.isNotEmpty()) File(dir, "logcat-recent.txt").writeBytes(out)
+        // 0.13.8 #173：有界读（原 readBytes 无 waitFor，会冻结看门狗调度线程）
+        val out = ProcIo.readBounded(p, 10)
+        if (!out.isNullOrEmpty()) File(dir, "logcat-recent.txt").writeText(EngineAuth.redact(out))
       } catch (_: Throwable) {
       }
       LogCollector.log(TAG, "diagnostics mirrored: " + dir.absolutePath)
@@ -847,7 +914,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
    * 会被首启持久化；fx-1 只修了 APK 内出厂模板，覆盖安装升级的设备上存量坏配置仍在——
    * 引擎 settings section() 抛 TypeError 且被插件加载器吞掉（engine.log 零痕迹），表现为
    * 模型页提供方列表空白 + 「添加提供方」点击无响应（2026-08-28 模拟器双向复现实锤）。
-   * 启动前把已知坏裸键修复为空对象；幂等、只触碰已知键、Failed不阻塞启动。
+   * 启动前把已知坏裸键修复为空对象；幂等、只触碰已知键、失败不阻塞启动。
    * 判定必须带前瞻：裸键后紧跟缩进子键 = 合法映射（非 null），绝不能改——否则插入重复键
    * DUPLICATE_KEY 直接炸引擎（2026-08-28 首版修复在 fx-1 正常文件上翻车实录）。
    */
@@ -906,7 +973,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
 
   /**
    * 引擎进程存活判定（0.13.0 启动超时 D1 的事实源）：进程句柄活着，或 3080 已可达，
-   * 即视为「引擎还在」（冷启动 20-45s 中轮询窗口内不许宣判Failed）。两者皆否才返回 false。
+   * 即视为「引擎还在」（冷启动 20-45s 中轮询窗口内不许宣判失败）。两者皆否才返回 false。
    * 供 startEngineFlow 的超时语义使用——进程活着就继续等，只有进程死才触发回退。
    */
   fun engineProcessAlive(): Boolean {
@@ -946,6 +1013,13 @@ class EngineManager(private val context: Context, private val pickToken: String?
       Runtime.getRuntime().exec(arrayOf("/system/bin/pkill", "-f", "bin.js")).waitFor()
     } catch (_: Throwable) {
     }
+    // 0.13.8 #175：强制重启前必须复核端口真的释放（坑 31：pkill 在部分 ROM 不生效）——
+    // 不释放就 spawn 会 EADDRINUSE 循环。最多等 5s，仍占用则显式记录（下次 tick 重试）。
+    repeat(5) {
+      if (!EngineProbe.portReachable(1_000)) return
+      try { Thread.sleep(1_000) } catch (_: InterruptedException) {}
+    }
+    LogCollector.log(TAG, "killExistingEngine: port 3080 still occupied after cleanup (release recheck failed)")
   }
 
   /** Reset the 90s cooldown window: auto-undo (config rollback) or user retry
@@ -1030,7 +1104,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
         "GIT_SSL_CAINFO" to cert.absolutePath,
         // 快照 node 编译期硬编码 OpenSSL 配置路径 /data/data/com.termux/...（app 域不可读）：
         // 不注入则任何 node/npm 子进程启动即 OpenSSL configuration error 退出（agent 工具调用
-        // npm/node 全部Failed，引擎本体侥幸存活）。与 UndoGate/AdbState 同一修复（坑 #5 统一到
+        // npm/node 全部失败，引擎本体侥幸存活）。与 UndoGate/AdbState 同一修复（坑 #5 统一到
         // 引擎级 env，覆盖 agent 所有工具子进程，2026-08-24 真机实测实锤）。
         "OPENSSL_CONF" to File(usrDir, "etc/tls/openssl.cnf").absolutePath,
       )
@@ -1043,6 +1117,8 @@ class EngineManager(private val context: Context, private val pickToken: String?
       // can't maintain the profiles/node_modules flat fallback); all runtime user data lives in private
       // files/home/.dsh, and public Documents/dshdata is only the export repo.
       "DSH_HOME" to ensurePrivateDshData().absolutePath,
+      // 0.13.8 #183：引擎子进程读取键盘广播 nonce 的路径基（manage 插件 --es auth 随广播携带）
+      "DSH_FILES_DIR" to context.filesDir.absolutePath,
       // os.tmpdir() falls back to the baked-in Termux tmp on Android
       // (unwritable from the app domain); keep spill inside filesDir.
       "TMPDIR" to File(homeDir, "tmp").apply { mkdirs() }.absolutePath,
@@ -1067,7 +1143,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
       "DSH_APP_VERSION_CODE" to BuildConfig.VERSION_CODE.toString(),
       // Directory-picker endpoint auth token (validated by the web-compat plugin via x-dsh-pick-token).
       "DSH_PICK_TOKEN" to (pickToken ?: ""),
-      // ADB 授权状态（0.13.0 F1.7）：dsh-android-bridge 插件据此Failed关闭；门控=完全访问档位+开关+配对。
+      // ADB 授权状态（0.13.0 F1.7）：dsh-android-bridge 插件据此失败关闭；门控=完全访问档位+开关+配对。
       "DSH_ADB_ALLOW" to (if (AdbState.allowSwitch(context)) "1" else "0"),
       "DSH_ADB_PAIRED" to (if (AdbState.paired(context)) "1" else "0"),
       "DSH_ADB_WIRELESS" to (if (AdbState.paired(context)) "1" else "0"),
@@ -1093,7 +1169,11 @@ class EngineManager(private val context: Context, private val pickToken: String?
      * （无障碍/DOM 优先、先验前台、按 ref 而非盲点坐标、动作后必校验、输入单次注入并回读）。
      */
     private val PHONE_CONTROL_SKILL = """
-# 手机操控流程（DSH Device Control）
+---
+name: phone-control
+description: 手机操控纪律：无障碍语义树优先、ref 语义点击/输入、动作后必校验、禁止盲点坐标与绕路。
+---
+# 手机操控流程（DSH 设备控制）
 
 ## 固定顺序
 1. 会话档位必须是 danger-full-access，否则设备工具一律拒绝（切换入口：会话底部权限芯片 → 完全权限；**不要试图让工具自己提权**，也不要用 Termux/ADB 绕路）。
@@ -1101,7 +1181,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
 3. 感知：android_ui_dump（无障碍语义树，首选）→ 若结果是 WebView 容器或目标是 DSH 自己的 Web UI，改用 android_web_dump（DOM 快照）。
 4. 卡住时：**先 android_ui_global back**（返回上一级），或 home 回桌面重新进入——子菜单/弹窗/详情页出不来时这是第一步。
 5. 动作：android_ui_click / android_ui_input，引用用 ref（id:nN / text:精确文本#k / desc: / rid: / wN / css: / text: / role:）。
-6. 校验：工具自带回执（点击回报「已生效 / 未观察到界面变化」；输入回报「回读一致 / 未落地」）——不要假设动作Success。
+6. 校验：工具自带回执（点击回报「已生效 / 未观察到界面变化」；输入回报「回读一致 / 未落地」）——不要假设动作成功。
 7. 需要看画面时用 android_screenshot（图像直接随结果返回，不需要再 read_image）。
 
 ## 纪律
@@ -1109,7 +1189,7 @@ class EngineManager(private val context: Context, private val pickToken: String?
 - 同名节点必须消歧：用 dump 里的 #k 序号（text:设置#2）。
 - 抓到的包名与前台不一致时以 dumpsys 为准（uiautomator/无障碍可能抓到覆盖层）。
 - 输入只走单次注入 + 回读断言；不要用 keyevent 打字母（中文 IME 会汉字化），不要拆成多段输入。
-- dump Failed（重 UI / 播放页常见）时按Notice走：先 back 退出重页面，或截图看画面；**不要转去尝试 Termux 或 ADB**（未配对时那条路不存在，只会浪费轮次）。
+- dump 失败（重 UI / 播放页常见）时按提示走：先 back 退出重页面，或截图看画面；**不要转去尝试 Termux 或 ADB**（未配对时那条路不存在，只会浪费轮次）。
 - 连续两次动作未产生预期变化时停下来重新 dump，并如实汇报当前界面状态，不要继续猜测。
 """
 

@@ -17,6 +17,7 @@ import { join, dirname } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { defineTool, type JsonValue } from '@deepseek-ai/dsh-tools'
 import { decideControl, type ControlDecision, type ControlOp } from './control-policy.js'
+import { negotiateProtocol } from './control-queue.js'
 import {
   ControlQueue,
   controlTokenFrom,
@@ -102,6 +103,8 @@ export interface ShellAdbPrefs {
   controlToken?: string
   /** 0.13.5 W4：轮询心跳（epoch ms）——判定服务是否真的活着（防僵尸 a11yEnabled）。 */
   controlHeartbeat?: number
+  /** 0.13.8 #180：门1 live 键（壳 syncFullAccess 写入；undefined = prefs 无该键 → 上层回落 env）。 */
+  fullAccess?: boolean
 }
 
 /** 持久文件路径：环境变量显式指定（测试/桌面模拟）优先；安卓壳域默认；其余返回 null。 */
@@ -124,9 +127,11 @@ export function parseAdbPrefsXml(xml: string): ShellAdbPrefs | null {
   const mA11y = /<boolean\s+name="a11yEnabled"\s+value="(true|false)"\s*\/?>/.exec(xml)
   const mToken = /<string\s+name="controlToken">([^<]*)<\/string>/.exec(xml)
   const mHeartbeat = /<long\s+name="controlHeartbeat"\s+value="(\d+)"\s*\/?>/.exec(xml)
+  // 0.13.8 #180：门1 live 化——fullAccess 键在场即解析（写端 = 壳侧 syncFullAccess）。
+  const mFullAccess = /<boolean\s+name="fullAccess"\s+value="(true|false)"\s*\/?>/.exec(xml)
   // 只要任一受管键在场就解析——无障碍通道独立于 ADB 三道人门，
   // 未开启 ADB 时 prefs 里可能只有 a11yEnabled/controlToken（0.13.5 实测踩坑）。
-  if (!mAllow && !mPair && !mA11y && !mToken) return null
+  if (!mAllow && !mPair && !mA11y && !mToken && !mFullAccess) return null
   return {
     allowSwitch: mAllow ? mAllow[1] === 'true' : false,
     paired: mPair ? mPair[1] === 'true' : false,
@@ -136,6 +141,7 @@ export function parseAdbPrefsXml(xml: string): ShellAdbPrefs | null {
     a11yEnabled: mA11y ? mA11y[1] === 'true' : false,
     controlToken: mToken?.[1] || undefined,
     controlHeartbeat: mHeartbeat ? Number(mHeartbeat[1]) : undefined,
+    fullAccess: mFullAccess ? mFullAccess[1] === 'true' : undefined,
   }
 }
 
@@ -160,9 +166,11 @@ function readShellAdbState(): ShellAdbPrefs | undefined {
  */
 function currentStatus(env: NodeJS.ProcessEnv, defaultWriteMode?: string): AdbStatus {
   const writeMode = defaultWriteMode ?? env.DSH_WRITE_MODE ?? 'workspace-write'
-  const fullAccess = env.DSH_ADB_FULLACCESS === '1'
   // live 优先：壳侧 SharedPreferences（引擎与壳同 UID 直读，只读）；无文件 → env 启动快照。
   const live = readShellAdbState()
+  // 0.13.8 #180：门1 live 化——live prefs 优先（与门2/门3 完全同构），env 启动快照兜底；
+  // 同一判定里不再有两套时效语义（桌面/测试宿主无 prefs 时回落 env）。
+  const fullAccess = live ? (live.fullAccess ?? (env.DSH_ADB_FULLACCESS === '1')) : (env.DSH_ADB_FULLACCESS === '1')
   const allowSwitchOn = live ? live.allowSwitch : env.DSH_ADB_ALLOW === '1'
   const paired = live ? live.paired : env.DSH_ADB_PAIRED === '1'
   const wirelessDebugOn = live ? live.paired : env.DSH_ADB_WIRELESS === '1'
@@ -336,7 +344,9 @@ export class AndroidPrivilegeService {
   gateFor(session?: unknown): { ok: true; via?: 'a11y' | 'adb' } | { ok: false; guidance: string; gates?: ControlGateFacts } {
     const st = this.status()
     const a11y = this.a11yEnabled()
-    const adbReady = engineLevelReady(st) && st.tier !== 'T0'
+    // 0.13.8 #172：能力门只由「引擎级三道门 + 会话档位实时门」决定——部署默认写面
+    // 档位（tier）降级为视图字段，不再参与门禁（坑 29：勿把部署默认当死锁）。
+    const adbReady = engineLevelReady(st)
     const gates: ControlGateFacts = {
       a11yEnabled: a11y,
       fullAccess: st.fullAccess === true,
@@ -372,9 +382,7 @@ export class AndroidPrivilegeService {
     if (!engineLevelReady(st)) {
       return { ok: false, guidance: st.message ?? '未授权' }
     }
-    if (st.tier === 'T0') {
-      return { ok: false, guidance: st.message ?? '未授权' }
-    }
+    // 0.13.8 #172：tier（部署默认档位视图）不再作为拒绝条件——会话档位由各 execute 实时门禁。
     return { ok: true, tier: st.tier }
   }
 
@@ -400,7 +408,8 @@ export class AndroidPrivilegeService {
   /** 0.13.5 W4：结构化授权事实（两条通道各自的门）。 */
   gateFacts(): ControlGateFacts {
     const st = this.status()
-    const adbReady = engineLevelReady(st) && st.tier !== 'T0'
+    // 0.13.8 #172：同 gateFor——部署档位视图不参与能力门。
+    const adbReady = engineLevelReady(st)
     return {
       a11yEnabled: this.a11yEnabled(),
       fullAccess: st.fullAccess === true,
@@ -418,7 +427,7 @@ export class AndroidPrivilegeService {
     return decideControl({
       op,
       a11yEnabled: this.a11yEnabled(),
-      adbReady: engineLevelReady(st) && st.tier !== 'T0',
+      adbReady: engineLevelReady(st), // 0.13.8 #172：部署档位视图不参与能力门
       sessionMode: mode,
       forceBackend,
     })
@@ -426,7 +435,10 @@ export class AndroidPrivilegeService {
 
   /** 0.13.5 W4：队列统计（诊断用；不泄漏页面内容）。 */
   controlStats() {
-    return this.controlQueue?.stats() ?? { waiting: false, served: 0, failed: 0, lastTakeAt: 0, lastResultAt: 0 }
+    return this.controlQueue?.stats() ?? {
+      waiting: false, served: 0, failed: 0, lastTakeAt: 0, lastResultAt: 0,
+      protocol: negotiateProtocol(undefined), caps: undefined,
+    }
   }
 
   /**
@@ -537,14 +549,17 @@ export class AndroidPrivilegeService {
   }
 }
 
+/** 诊断面展示路由的常用操作（与工具面一一对应）。 */
+const ROUTE_OPS: ControlOp[] = ['snapshot', 'click', 'scroll', 'setText', 'screenshot', 'global']
+
 function tools(svc: AndroidPrivilegeService, shellFace?: { resolve?(spec: Record<string, unknown>): Record<string, unknown>; run(spec: Record<string, unknown>): Promise<Record<string, unknown>> }, controlTokenConfigured: () => boolean = () => false) {
   const statusTool = defineTool({
     name: 'android_privilege_status',
     description:
-      '查询设备控制授权状态。两条等价通道：无障碍通道（系统设置开启「DSH 设备控制」一次即成立，'
-      + '提供 dump/click/input/scroll 语义操作）与 ADB 通道（完全访问 + 允许访问 + 无线调试配对，'
-      + '高级/脚本面：shell 执行、原图截图、pm/dumpsys）。返回结构化 gates 与 control 字段；'
-      + '两者都不可用时给出两条开启路径的引导。手机管理工具全部以此为前置检查，失败关闭。',
+      '查询设备控制授权状态。无障碍通道为主（系统设置开启「DSH 设备控制」一次即成立，'
+      + '提供 dump/click/input/scroll 语义操作）；ADB 通道为高级/脚本兜底（完全访问 + 允许访问 + 无线调试配对：'
+      + 'shell 执行、原图截图、pm/dumpsys），不是「等价」通道——无障碍优先，ADB 仅兜底。'
+      + '返回结构化 gates 与 control 字段；两者都不可用时给出两条开启路径的引导。手机管理工具全部以此为前置检查，失败关闭。',
     parameters: {},
     output: {
       schema: {
@@ -563,6 +578,8 @@ function tools(svc: AndroidPrivilegeService, shellFace?: { resolve?(spec: Record
           message: { type: 'string' },
           gates: { type: 'object', additionalProperties: true, description: '结构化授权事实（a11yEnabled/fullAccess/allowSwitch/paired/wirelessDebug/adbReady）' },
           control: { type: 'object', additionalProperties: true, description: '控制通道运行时状态（a11yEnabled/queue/tokenConfigured）' },
+          route: { type: 'object', additionalProperties: true, description: '每个常用操作走哪条通道/为什么/另一条缺什么（结构化路由）' },
+          shell: { type: 'object', additionalProperties: true, description: '壳侧声明的协议版本与能力（caps.ops/view/gz）与协商结论' },
         },
       },
       render: (_args, v: Record<string, unknown>) => {
@@ -578,21 +595,55 @@ function tools(svc: AndroidPrivilegeService, shellFace?: { resolve?(spec: Record
               + `${control?.tokenConfigured === true ? ' · 令牌已配置' : ''}`
               + `${queueFresh ? ' · 壳侧轮询在线' : ' · 壳侧轮询离线'}`,
             `ADB 通道：${gates?.adbReady ? '已就绪' : `未就绪（完全访问=${String(gates?.fullAccess)} 允许访问=${String(gates?.allowSwitch)} 配对=${String(gates?.paired)} 无线调试=${String(gates?.wirelessDebug)}）`}`,
-            gates?.a11yEnabled ? '结论：设备控制可用（走无障碍通道）'
-              : gates?.adbReady ? '结论：设备控制可用（走 ADB 通道）'
-                : '结论：不可用——开启任一通道即可（推荐无障碍：系统设置 → 无障碍 → DSH 设备控制）',
+            gates?.a11yEnabled ? '结论：设备控制可用（走无障碍通道）——下一步用 android_ui_dump（manage）拿语义清单'
+              : gates?.adbReady ? '结论：设备控制可用（走 ADB 通道，仅兜底）——下一步用 android_ui_dump（无障碍优先）或 android_ui_tree（ADB）'
+                : '结论：不可用——开启任一通道即可（推荐无障碍：系统设置 → 无障碍 → DSH 设备控制，一步即用）',
             v.message ? `ADB 提示：${String(v.message)}` : '',
+            (() => {
+              const shell = v.shell as { protocol?: { shell?: number; engine?: number; ok?: boolean; reason?: string }; caps?: { ops?: unknown[] } | null } | undefined
+              if (!shell?.protocol) return ''
+              const p = shell.protocol
+              const capsOps = Array.isArray(shell.caps?.ops) ? (shell.caps!.ops as unknown[]).length : 0
+              return `壳侧协议：pv=${String(p.shell)}（引擎支持 ${String(p.engine)}）${p.ok ? '' : ' —— 不兼容：' + String(p.reason)}`
+                + (capsOps > 0 ? ` · 声明能力 ${capsOps} 项` : ' · 未声明能力（老壳）')
+            })(),
+            '路由（dump/click/scroll/input/screenshot/global）：'
+              + Object.entries((v.route ?? {}) as Record<string, { backend?: string }>)
+                .map(([op, r]) => `${op}=${String(r?.backend ?? '?')}`).join(' '),
           ].filter((line) => line !== '').join('\n'),
         }]
       },
     },
-    execute: async () => {
+    execute: async (_args, exec) => {
       const st = svc.status()
+      const session = (exec as { agent?: { session?: unknown } } | undefined)?.agent?.session
+      // 0.13.8 P2-15：结构化 route 块——每个常用操作**走哪条通道、为什么、另一条缺什么**。
+      // 以前这些判断只存在于代码路径里，模型只能靠「失败后猜」。
+      const route: Record<string, unknown> = {}
+      const facts = svc.gateFacts()
+      for (const op of ROUTE_OPS) {
+        const d = svc.controlDecision(op, session)
+        const altAdb = facts.adbReady === true
+        const altA11y = svc.a11yEnabled()
+        route[op] = {
+          backend: d.backend,
+          reason: d.reason,
+          alternative: d.backend === 'a11y'
+            ? { backend: 'adb', available: altAdb, missing: altAdb ? null : '完整访问档位 / 应用内允许访问开关 / 无线调试配对' }
+            : { backend: 'a11y', available: altA11y, missing: altA11y ? null : '系统设置 → 无障碍 → 开启「DSH 设备控制」' },
+        }
+      }
+      const queue = svc.controlStats()
       return {
         ...st,
         deviceModel: svc.boundModel(),
         gates: svc.gateFacts() as unknown as Record<string, JsonValue>,
-        control: { a11yEnabled: svc.a11yEnabled(), queue: svc.controlStats(), tokenConfigured: controlTokenConfigured() },
+        route: route as unknown as Record<string, JsonValue>,
+        shell: {
+          protocol: queue.protocol as unknown as JsonValue,
+          caps: (queue.caps ?? null) as unknown as JsonValue,
+        },
+        control: { a11yEnabled: svc.a11yEnabled(), queue: queue as unknown as JsonValue, tokenConfigured: controlTokenConfigured() },
       }
     },
   })
@@ -661,7 +712,8 @@ function tools(svc: AndroidPrivilegeService, shellFace?: { resolve?(spec: Record
       '真实 ADB 通道执行（0.14）：经本机 adbd 以 shell 身份执行系统命令（配对后可用）。' +
       '用途：screencap/uiautomator/dumpsys/input/getprop 等系统面只读与输入类；' +
       '系统配置写面（settings put/pm grant/appops/mount 等）一律拒绝。' +
-      '需完整授权（门1 完全访问档位 + 门2 允许开关 + 门3 真实配对）且会话档位 danger-full-access；未授权失败关闭。',
+      '需引擎级三道门（门1 完全访问 + 门2 允许开关 + 门3 真实配对）且会话档位 danger-full-access'
+      + '（部署默认写面档位只是视图，不参与门禁——0.13.8 #172）；未授权失败关闭。',
     parameters: {
       command: { type: 'string', required: true, description: '在 adbd（shell 用户）中执行的命令' },
     },
@@ -865,6 +917,9 @@ export function apply(ctx: Context, config: Record<string, unknown> = {}) {
       handler: async (_req: WsReq, res: WsRes) => {
         sendJson(res, 200, {
           ...svc.status(),
+          // 0.13.8 #172：结构化通道事实（两通道各自的门）——展示面与诊断共用，
+          // adbReady 只看引擎级三道门（部署档位视图不参与，坑 29）。
+          gates: svc.gateFacts() as unknown as Record<string, JsonValue>,
           // 0.13.5 W4：控制通道事实（只读；令牌本身绝不回显）
           control: {
             a11yEnabled: svc.a11yEnabled(),

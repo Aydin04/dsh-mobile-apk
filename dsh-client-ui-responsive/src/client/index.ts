@@ -49,6 +49,8 @@ import { MobileChrome, type MobileChromeInjected } from './mobile/MobileChrome.t
 import { OpenInFileManagerAction } from './mobile/OpenInFileManagerAction.tsx'
 import { EXTERNAL_OPEN_ID, externalOpenDefinition } from './mobile/external-open-paths.ts'
 import { ExternalOpenTab } from './mobile/external-open.tsx'
+import { SettingsDocumentAction } from './mobile/settings-document.ts'
+import { ReferenceMenuEnhancer, REFERENCE_BAR_CSS } from './mobile/reference-menu.ts'
 
 // Contract exports only (export-convergence rule): the plugin surface is
 // `apply` and `inject`; every component, marker, and helper stays internal.
@@ -268,6 +270,27 @@ export function apply(ctx: ClientContext): void {
     name: 'sidebar.right.pane.tab',
     key: EXTERNAL_OPEN_ID,
   }, ExternalOpenTab))
+
+  // Mobile reference menu (apk #163): rows get a leading checkbox (multi-select) and a
+  // directory row body drills in instead of referencing the folder; upstream keeps the
+  // settle-pick for files and for the trailing chevron.
+  ctx.effect(() => {
+    const enhancer = new ReferenceMenuEnhancer()
+    enhancer.attach()
+    return () => { enhancer.detach() }
+  }, 'ui-responsive: reference menu enhancer')
+  // 多选条与勾选框的样式（0.13.8 修复深色适配）：集中注入，含 hover/active/焦点态与
+  // prefers-color-scheme 暗色兜底（壳侧 ThemeBridge 已把该查询接到系统深浅色）。
+  ctx.effect(() => injectStyle('reference-bar', REFERENCE_BAR_CSS), 'ui-responsive: reference menu bar styles')
+
+  // Settings "open configuration file" (apk #152): the upstream action hands the document to a
+  // desktop text editor, which Android does not have; claim the click and open the settings
+  // document through the shell chooser instead.
+  ctx.effect(() => {
+    const action = new SettingsDocumentAction()
+    action.attach()
+    return () => { action.detach() }
+  }, 'ui-responsive: settings document action takeover')
 
   // ── Bridges ─────────────────────────────────────────────────────────────
 

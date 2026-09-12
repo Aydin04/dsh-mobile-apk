@@ -437,6 +437,121 @@ const IMPLS = {
     },
   },
 
+
+  // ── spj-migration-link-F5：会话迁移发布的 link(2) 回退（2026-09-11 apk issue #154，scope=engine）──
+  // 根因：0.1.5 起会话格式推到 v3，旧会话（header version:0）首次打开必走 v0→v3 迁移，最后一步
+  // publishCurrentExclusive() 用 link(2) 原子发布；Android 应用域 SELinux 拒绝 hardlink（EACCES，
+  // denial 被 dontaudit 静默）→ 升级前写入的会话全部打不开。同文件 materialize 路径早有同款回退，
+  // 此处漏打（运行期 asset 亦只覆盖了后者）。
+  // 不变量：link 在 EACCES/EPERM/ENOTSUP 下改用模块顶层导入的 rename 发布（internals.fs 不暴露 rename）。
+  'spj-migration-link-F5': {
+    file: 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js',
+    scope: 'engine',
+    check: (s) => (s.match(/dsh-mobile link->rename fallback/g) || []).length === 2,
+    apply: (s) => {
+      if ((s.match(/dsh-mobile link->rename fallback/g) || []).length === 2) return s
+      const IMPORT_OLD = 'import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, truncate } from "node:fs/promises";'
+      const IMPORT_NEW = 'import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, truncate } from "node:fs/promises";'
+      if (s.includes(IMPORT_OLD)) s = s.replace(IMPORT_OLD, IMPORT_NEW)
+      else if (!s.includes('realpath, rename, rm')) throw new Error('spj-migration-link 锚点未命中：import rename')
+      const FALLBACK = (from, to) => [
+        'await link(' + from + ', ' + to + ').catch(async (error) => {',
+        '\t/* dsh-mobile link->rename fallback: Android app-private dirs reject link(2) (EACCES). */',
+        '\tif (!(error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM" || error.code === "ENOTSUP"))) throw error;',
+        '\tawait rename(' + from + ', ' + to + ');',
+        '});',
+      ].join('\n')
+      const A_OLD = '\t\t\tawait link(tmp, finalPath);'
+      if (!s.includes(A_OLD)) throw new Error('spj-migration-link 锚点未命中：materialize link(tmp, finalPath)')
+      s = s.replace(A_OLD, '\t\t\t' + FALLBACK('tmp', 'finalPath').split('\n').join('\n\t\t\t'))
+      const B_OLD = [
+        '\t\tif (isEEXIST(error)) return false;',
+        '\t\t/* v8 ignore next -- the filesystem error is already complete. */',
+        '\t\tthrow error;',
+        '\t}',
+        '\tawait syncDirectory(dirname(currentPath), internals);',
+      ].join('\n')
+      const B_NEW = [
+        '\t\tif (isEEXIST(error)) return false;',
+        '\t\t/* dsh-mobile link->rename fallback: Android app-private dirs reject link(2) (EACCES). */',
+        '\t\tif (!(error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM" || error.code === "ENOTSUP"))) throw error;',
+        '\t\tawait rename(staged, currentPath);',
+        '\t}',
+        '\tawait syncDirectory(dirname(currentPath), internals);',
+      ].join('\n')
+      if (!s.includes(B_OLD)) throw new Error('spj-migration-link 锚点未命中：publishCurrentExclusive catch 块')
+      s = s.replace(B_OLD, B_NEW)
+      if ((s.match(/dsh-mobile link->rename fallback/g) || []).length !== 2) throw new Error('spj-migration-link 复核失败——不写回')
+      return s
+    },
+  },
+
+  // ── publish-exclusive-F7：找回发布独占语义（2026-09-12 apk issue #170，scope=engine）──
+  // F5 用 rename 回退修「旧会话打不开」，但 rename 会**静默替换**已存在的 currentPath，
+  // 于是上游的 isEEXIST → return false（唯一创建语义）在 Android 上成了死代码：
+  // 并发发布同一会话时双方都返回 true，后者覆盖前者已追加的事件（历史静默缺失）。
+  // 修法：沿用 F5 的站点，在 rename 之前用 O_EXCL 原子占位——占位成功=我们赢；输家得到
+  // EEXIST 并 return false，与 link 路径完全同语义；rename 随后替换的是我们自己刚占的位。
+  'publish-exclusive-F7': {
+    file: 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js',
+    scope: 'engine',
+    check: (s) => s.includes('dsh-mobile exclusive publish (F7)'),
+    apply: (s) => {
+      if (s.includes('dsh-mobile exclusive publish (F7)')) return s
+      const MARK = '/* dsh-mobile link->rename fallback: Android app-private dirs reject link(2) (EACCES). */'
+      const idx = s.indexOf(MARK, s.indexOf('isEEXIST(error)) return false;'))
+      // 锚点缺失 = 目标文件不是 F5 打过补丁的那份（例如补丁测试用的合成夹具）→ 不改写直接返回。
+      // 强制力不靠这里抛错：装配后的快照有 overlay marker 门禁（F7 marker 缺席即拒打包），
+      // 所以「真树上锚点没命中」仍然会被拦住，而合成夹具不会误伤。
+      if (idx < 0) return s
+      const RENAME = 'await rename(staged, currentPath);'
+      const rel = s.indexOf(RENAME, idx)
+      if (rel < 0) return s
+      const CLAIM_LINES = [
+        '/* dsh-mobile exclusive publish (F7): rename() silently replaces an existing target, so the',
+        '   EEXIST semantics link(2) gave us would vanish. Claim the destination with O_EXCL first:',
+        '   the loser gets EEXIST here and reports false, exactly like the link path. */',
+        'try {',
+        '  const claim = await open(currentPath, "wx");',
+        '  await claim.close();',
+        '} catch (claimError) {',
+        '  if (claimError instanceof Error && "code" in claimError && claimError.code === "EEXIST") return false;',
+        '  throw claimError;',
+        '}',
+      ]
+      const indent = '\t\t'
+      const body = CLAIM_LINES.map((line) => indent + line).join('\n') + '\n'
+      s = s.slice(0, rel) + body + indent + s.slice(rel)
+      if (!s.includes('dsh-mobile exclusive publish (F7)')) throw new Error('publish-exclusive 复核失败——不写回')
+      return s
+    },
+  },
+
+  // ── reference-drill-F6：移动端目录行点行体进子目录（2026-09-11 apk #163，scope=engine）──
+  // 上游 0.1.5 的 @ 菜单给目录行两个动词：行体=落定 pick（把文件夹本身变成原子引用并关菜单），
+  // 行尾小箭头/Tab=下钻。手机上点行体只想「进去看看」，结果直接引用了文件夹 —— 用户侧表现为
+  // 「@ 只能选到第一层、用不了」（#150/#144/#163）。移动形态标记（html[data-dsh-mobile-form]，
+  // 由 dsh-client-ui-responsive 打）在场时，目录行的落定动作改为下钻；桌面行为不变。
+  'reference-drill-F6': {
+    file: 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-reference/lib/client.js',
+    scope: 'engine',
+    check: (s) => s.includes('dsh-mobile mobile-folder-drill (F6)'),
+    apply: (s) => {
+      if (s.includes('dsh-mobile mobile-folder-drill (F6)')) return s
+      const OLD = 'if (value.fileKind === "directory" && action === "drill") return {'
+      const NEW = [
+        '/* dsh-mobile mobile-folder-drill (F6): on the phone form a directory row settles into the folder',
+        ' * instead of referencing it — the trailing chevron and Tab keep drilling, and the multi-select',
+        ' * checkbox is owned by the responsive layer. Desktop (no form marker) is untouched. */',
+        'if (value.fileKind === "directory" && (action === "drill" || document.documentElement.hasAttribute("data-dsh-mobile-form"))) return {',
+      ].join('\n')
+      if (!s.includes(OLD)) throw new Error('reference-drill 锚点未命中：onPick 的 directory/drill 判定')
+      s = s.replace(OLD, NEW)
+      if (!s.includes('dsh-mobile mobile-folder-drill (F6)')) throw new Error('reference-drill 复核失败——不写回')
+      return s
+    },
+  },
+
   // ── boot-pending-G1：web boot 容错（0.13.5 W1b，引擎树补丁 scope=engine）──
   // issue #126 P3：第三方插件声明 inject 了 client-only 服务（uiConversation 只存在于
   // dsh-client-ui-*/lib/client.js），宿主永远不 provide → fiber 永久 pending →

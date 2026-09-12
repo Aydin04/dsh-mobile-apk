@@ -56,6 +56,9 @@ class MainActivity : ComponentActivity() {
   private var webSystemBottomInset = 0
   private var webSystemTopInset = 0
   private var webImeBottomInset = 0
+  /** apk #182-2：横屏 + 侧边挖孔（short edge = 左右）时页面需要左右 inset 才能避让。 */
+  private var webSystemLeftInset = 0
+  private var webSystemRightInset = 0
   /** Coalesces rapid IME animation callbacks into one WebView evaluation per UI turn. */
   private var webInsetsPushScheduled = false
   /** 目录选择桥鉴权 token（进程级共享：MainActivity 重建/看门狗重启不更换，
@@ -77,7 +80,7 @@ class MainActivity : ComponentActivity() {
   /** 窗口/页面 UI chrome（沉浸式/字体/剪贴板/常亮/主题推送）。 */
   private val uiChrome = WebUiChrome(this)
 
-  /** 崩溃标记：记录未捕获异常摘要，下次启动测试界面Notice（不吞异常）。 */
+  /** 崩溃标记：记录未捕获异常摘要，下次启动测试界面提示（不吞异常）。 */
   internal var crashInfo: String? = null
   /** 用户主动关闭后，前台监控与任何尚未结束的启动线程不得重新展示 WebUI。 */
   @Volatile
@@ -90,7 +93,7 @@ class MainActivity : ComponentActivity() {
     private const val TAG = "dsh-shell"
     const val ACTION_UPDATE = "com.dsharnessmobile.shell.action.UPDATE"
 
-    /** #120：显式拒绝哨兵路径前缀（引擎侧识别为拒绝而非Cancel，见 host-web-compat）。
+    /** #120：显式拒绝哨兵路径前缀（引擎侧识别为拒绝而非取消，见 host-web-compat）。
      *  协议：`__dsh_pick_refused__:<reason>`，reason = permission-denied | android-10。 */
     const val PICK_REFUSED_PREFIX = "__dsh_pick_refused__:"
 
@@ -123,7 +126,7 @@ class MainActivity : ComponentActivity() {
     // 0.13.3 W2：引擎鉴权模块绑定应用上下文（EngineProbe 等 object 调用方的 cookie 来源）。
     EngineAuth.initContext(this)
     // 崩溃标记：进程级未捕获异常写入 filesDir/.crashed（下次启动测试界面
-    // Notice），随后交回默认 handler——只记录，不吞异常、不阻止崩溃。
+    // 提示），随后交回默认 handler——只记录，不吞异常、不阻止崩溃。
     installCrashMarker()
     // 启动即 TTL 清扫临时工作区（issue #60 F5.1：7 天过期文件自动回收）
     try { FileIncoming.sweepExpired(this) } catch (_: Throwable) {}
@@ -143,6 +146,15 @@ class MainActivity : ComponentActivity() {
     }
     // 沉浸式：内容延伸到系统栏区域（状态栏常态收起，边缘滑动临时呼出）。
     WindowCompat.setDecorFitsSystemWindows(window, false)
+    // 0.13.7fx-1（真机反馈）：只做 edge-to-edge 还不够——有挖孔/刘海的机器上，系统默认把窗口内容
+    // 拦在挖孔下方，最顶部（原状态栏位置）留出一条窗口底色，用户看到「最顶部的黑带」。
+    // 允许内容画进短边挖孔区，内容避让交给推给页面的 --dsh-android-system-top。
+    if (android.os.Build.VERSION.SDK_INT >= 28) {
+      window.attributes = window.attributes.apply {
+        layoutInDisplayCutoutMode =
+          android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+      }
+    }
     uiChrome.applyImmersive(uiChrome.immersivePrefs())
     val root = FrameLayout(this)
     webView = WebView(this).apply {
@@ -166,7 +178,19 @@ class MainActivity : ComponentActivity() {
       // is 0 while the bar is hidden, so this tracks the toggle for free.
       webSystemTopInset = pxToCssPx(maxOf(bars.top, cutout.top), density)
       webSystemBottomInset = pxToCssPx(maxOf(bars.bottom, mandatoryGestures), density)
+      // #182-2：左右同样取系统栏与挖孔的较大者（横屏且侧边挖孔时 cutout.left/right > 0）。
+      webSystemLeftInset = pxToCssPx(maxOf(bars.left, cutout.left), density)
+      webSystemRightInset = pxToCssPx(maxOf(bars.right, cutout.right), density)
       webImeBottomInset = pxToCssPx(ime, density)
+      // #197（机制①）：edge-to-edge 下 WebView 的**布局尺寸从不随 IME 变化**（布局视口恒 800），
+      // 页面只把 frame 高度钉成 visualViewport.height → 输入框在布局里仍在页面底部，Chrome 按
+      // 「把它滚进可视区」平移视觉视口；页面随后缩短 frame，Chrome 不重算 → offsetTop 残留
+      // （实测 ime=371 ↔ vvTop=371），表现为键盘弹起后底部一大片空白。
+      // 修法：把 IME inset 施加到 WebView 自身的**布局尺寸**上（底 padding 收缩内容盒）——
+      // 布局视口真的变短，浏览器就没有可平移的余地，机制① 从根上消失；只推 CSS 变量做不到这点。
+      if (webViewReady) {
+        webView.setPadding(0, 0, 0, ime)
+      }
       scheduleWebInsetsPush()
       if (guideViewReady) {
         val gutter = resources.getDimensionPixelSize(R.dimen.ds_guide_gutter)
@@ -181,14 +205,20 @@ class MainActivity : ComponentActivity() {
     }
     ViewCompat.requestApplyInsets(root)
     configureWebView()
+    // 0.13.8 #183：键盘广播 nonce（应用私有文件，引擎子进程经 DSH_FILES_DIR 读取，
+    // manage 插件广播时 --es auth 携带；幂等）。
+    try { AdbKeyboardService.ensureNonce(this) } catch (_: Throwable) {
+    }
     // Testable update trigger: adb am start -n .../.MainActivity -a com.dsharnessmobile.shell.action.UPDATE
     if (intent?.action == ACTION_UPDATE) {
       engineFlow.runUpdate()
     } else {
       // 来件接线（VIEW/SEND 外部来件）已迁至 FileIncoming.processIncomingIntent：
-      // 校验净化→拷贝临时工作区→通知引擎侧插件；拒绝/Failed经 showTestNotification Notice。
-      FileIncoming.processIncomingIntent(this, intent) { title, text -> showTestNotification(title, text) }
+      // 校验净化→后台拷贝临时工作区→待发清单投递引擎侧插件；拒绝/失败经 showTestNotification 提示。
+      // 0.13.8 #174：startEngineFlow 提前——引擎启动是异步的，先拉起缩短
+      // 「拷完 POST 早于引擎 listen」的竞态窗口（投递另有待发清单 + 引擎就绪钩子兜底）。
       startEngineFlow()
+      FileIncoming.processIncomingIntent(this, intent) { title, text -> showTestNotification(title, text) }
     }
   }
 
@@ -204,7 +234,7 @@ class MainActivity : ComponentActivity() {
       engineFlow.startMonitor()
     }
     // 2026-08-24 修复（真机实锤：通知链路不消费的根因）：startEngineService（foreground service
-    // + WatchdogV2 tick）此前只在 startEngineFlow 首次轮询Success时挂载——**引擎先跑、app 后启动
+    // + WatchdogV2 tick）此前只在 startEngineFlow 首次轮询成功时挂载——**引擎先跑、app 后启动
     // （后台恢复/热启动）时服务从未启动 → watchdog 缺失 → 通知消费（task-done 标记）/自动回退
     // /唤醒锁全链路失效**。onResume 幂等确保服务启动（已在跑则 no-op）。
     if (!userClosedEngine) {
@@ -240,6 +270,8 @@ class MainActivity : ComponentActivity() {
     }
     // M3：从系统授权页返回——上次 pick 因缺权限挂起时按授权结果续启/结算（迁至 DirectoryPickerController）。
     dirPickerController.settlePendingOnResume()
+    // 0.13.8 批 H：从「安装未知应用」授权页返回——已授权则续继 APK 更新包的安装。
+    guideRenderer.settlePendingInstall()
   }
 
   /** 窗口重新获得焦点时重应用沉浸式（系统栏 flag 会随焦点变化被重置）。 */
@@ -442,6 +474,8 @@ class MainActivity : ComponentActivity() {
             android.content.res.Configuration.UI_MODE_NIGHT_YES
         },
         onSetImmersiveRequest = { enable -> setImmersivePersisted(enable) },
+        onSettingsPathRequest = { engineManager.settingsDocumentPath() },
+        onExportSettingsDocument = { engineManager.settingsDocumentExport() },
         onCopyTextRequest = { text -> copyTextNative(text) },
         pickToken = pickToken,
         onRestartEngine = { engineFlow.restart() },
@@ -459,7 +493,8 @@ class MainActivity : ComponentActivity() {
             LogCollector.log("dsh-shell", "dev log enabled by user")
             showTestNotification(
               "开发者日志已开启",
-              "运行日志按天写入 " + LogCollector.currentDir(this).absolutePath,
+              "运行日志按天写入 " + LogCollector.currentDir(this).absolutePath +
+                "（共享存储，其他应用可读；启动令牌已自动脱敏，日志仍含命令与模型内容）",
             )
           } else {
             LogCollector.log("dsh-shell", "dev log disabled by user")
@@ -480,7 +515,7 @@ class MainActivity : ComponentActivity() {
         // 0.13.2 W7：悬浮球开关（控制器处理 overlay 权限引导；onResume 补启已授权的开关）。
         onGetOverlayEnabled = { OverlayController.isEnabled(this) },
         onSetOverlayEnabled = { enable -> OverlayController.setEnabled(this, enable) },
-        // 0.14 真实配对：码值只经 adb argv（壳侧），端口取自系统「无线调试」弹窗；配对Success才写 paired。
+        // 0.14 真实配对：码值只经 adb argv（壳侧），端口取自系统「无线调试」弹窗；配对成功才写 paired。
         // F3 结构化结果（JSON ok/reason/message）：前端按 reason 分流文案，拒绝「输什么都像码错」。
         onSetAdbPair = { code, pairPort, connectPort ->
           AdbState.pairWithCodeJson(this, engineManager, code, pairPort, connectPort)
@@ -497,7 +532,7 @@ class MainActivity : ComponentActivity() {
     )
     // 0.13.3 W2：引擎 /api 全前缀走浏览器鉴权（401）。WebView 首屏先换好 cookie：
     // Kotlin 侧 P0（engine.log token 交换）/P1（credentials 密钥自 mint）拿到 cookie 后
-    // 注入 CookieManager——同源 XHR/WS 自动携带；交换Failed时回退带 token 的 URL 让引擎
+    // 注入 CookieManager——同源 XHR/WS 自动携带；交换失败时回退带 token 的 URL 让引擎
     // 303+Set-Cookie 自愈（官方交换路径）。
     val authCookie = EngineAuth.refresh(this)
     if (authCookie != null) {
@@ -548,7 +583,7 @@ class MainActivity : ComponentActivity() {
     }
   }
 
-  /** M7：主题延迟重推 Runnable 引用（onDestroy Cancel用）。 */
+  /** M7：主题延迟重推 Runnable 引用（onDestroy 取消用）。 */
   private var themeRetryRunnable: Runnable? = null
 
   /** 系统深色状态推送：某些厂商 WebView 的 prefers-color-scheme 不跟随
@@ -575,7 +610,7 @@ class MainActivity : ComponentActivity() {
             "window.__dshThemeBridge && window.__dshThemeBridge.setDark(" + dark + ")", null,
           )
         } catch (_: Exception) {
-          // 页面/WebView 已销毁：重推Failed无害。
+          // 页面/WebView 已销毁：重推失败无害。
         }
       }
       themeRetryRunnable = runnable
@@ -606,14 +641,18 @@ class MainActivity : ComponentActivity() {
         "(function(){var root=document.documentElement;if(!root)return;var top='" + webSystemTopInset +
           "px';var system='" + webSystemBottomInset +
           "px';var ime='" + webImeBottomInset +
+          "px';var left='" + webSystemLeftInset +
+          "px';var right='" + webSystemRightInset +
           "px';root.style.setProperty(" +
           "'--dsh-android-system-top',top);root.style.setProperty(" +
           "'--dsh-android-system-bottom',system);root.style.setProperty('--dsh-android-ime-bottom',ime);" +
+          "root.style.setProperty('--dsh-android-system-left',left);" +
+          "root.style.setProperty('--dsh-android-system-right',right);" +
           "})()",
         null,
       )
     } catch (_: Exception) {
-      // 页面/WebView Not ready yet：onPageFinished 会补推当前缓存值。
+      // 页面/WebView 尚未就绪：onPageFinished 会补推当前缓存值。
     }
   }
 
@@ -629,7 +668,7 @@ class MainActivity : ComponentActivity() {
   private var screenWakeLock: PowerManager.WakeLock? = null
 
   /**
-   * 0.13.5 W4：跳系统无障碍设置页（用户手动开启「DSH Device Control」）。
+   * 0.13.5 W4：跳系统无障碍设置页（用户手动开启「DSH 设备控制」）。
    * Android 13+ 侧载应用可能因受限设置而看不到开关——由设置页的「一键解锁」按钮先 appops 解锁。
    */
   private fun openAccessibilitySettings() {
@@ -708,7 +747,7 @@ class MainActivity : ComponentActivity() {
 
   /** 导出结果回传 WebView：UI 插件经 window.__dshExportResult 弹软件内结果框。 */
   internal fun pushExportResult(ok: Boolean, detail: String) {
-    val title = if (ok) "Export Successful" else "Export Failed"
+    val title = if (ok) "导出成功" else "导出失败"
     val payload = "{\"ok\":" + ok + ",\"title\":" + jsString(title) + ",\"detail\":" + jsString(detail) + "}"
     webView.post {
       webView.evaluateJavascript(
@@ -749,7 +788,7 @@ class MainActivity : ComponentActivity() {
         )
         LogCollector.log("dsh-saf", "raw 写探测: " + probe.take(200))
       } catch (t: Throwable) {
-        LogCollector.log("dsh-saf", "appop 解锁Failed: " + t.message)
+        LogCollector.log("dsh-saf", "appop 解锁失败: " + t.message)
       }
     }.start()
   }

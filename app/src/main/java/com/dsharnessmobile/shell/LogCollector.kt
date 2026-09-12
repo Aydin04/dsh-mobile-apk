@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit
  * dsh-<date>.1.log; a new file starts on each new day. Process-level singleton, start/stop idempotent.
  *
  * Privacy: logs contain commands and model content, for troubleshooting only; no credential files are read.
+ * All sink writes pass EngineAuth.redact() (0.13.8 #184) — launch tokens never reach shared copies.
  */
 object LogCollector {
 
@@ -31,6 +32,13 @@ object LogCollector {
 
   private var executor: ScheduledExecutorService? = null
   private var appContext: Context? = null
+
+  /** 事件写盘专用单线程执行器（0.13.8 #174：log() 曾同步 appendText——FileIncoming 来件
+   *  管线与 MainActivity 通知链都在主线程调它，磁盘慢时直接卡首帧）。FIFO 保序；daemon。 */
+  private val logExecutor: java.util.concurrent.ExecutorService =
+    java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+      Thread(r, "dsh-log-writer").apply { isDaemon = true }
+    }
 
   /** engine.log incremental read offset (in-process; restarts from the top on truncation/rotation). */
   private var engineLogOffset = 0L
@@ -60,14 +68,17 @@ object LogCollector {
    * Write shell events directly (no logcat dependency — on MuMu/Android 15 logd blocks logcat reads
    * for non-privileged apps even with a matching --pid). Persisted only while the collector runs;
    * key events (engine start/stop, crash marker, restarts) are written here as they occur.
+   * 0.13.8 #174：写盘移交 logExecutor（调用方立即返回）；时间戳在入队时刻取，保序 FIFO。
    */
   fun log(tag: String, message: String) {
     val ctx = appContext ?: return
-    try {
-      val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
-      appendToDayFile(ctx, "$ts $tag: $message\n")
-    } catch (t: Throwable) {
-      Log.w(TAG, "event log write failed: " + (t.message ?: t.javaClass.simpleName))
+    val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+    logExecutor.execute {
+      try {
+        appendToDayFile(ctx, "$ts $tag: $message\n")
+      } catch (t: Throwable) {
+        Log.w(TAG, "event log write failed: " + (t.message ?: t.javaClass.simpleName))
+      }
     }
   }
 
@@ -148,16 +159,19 @@ object LogCollector {
     }
   }
 
-  /** Daily rotation: dsh-<date>.log, rotating to dsh-<date>.1.log when over the size limit. */
+  /** Daily rotation: dsh-<date>.log, rotating to dsh-<date>.1.log when over the size limit.
+   *  出口脱敏（0.13.8 #184）：本函数是所有日志落盘（事件/logcat/engine.log 尾巴）的唯一
+   *  咽喉，写前过 EngineAuth.redact——engine.log 本体不动（鉴权链依赖），脱敏只作用于这份副本。 */
   private fun appendToDayFile(ctx: Context, text: String) {
     val day = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
     val dir = currentDir(ctx)
+    val safe = EngineAuth.redact(text)
     val file = File(dir, "dsh-$day.log")
     if (file.exists() && file.length() > MAX_FILE_BYTES) {
       val rotated = File(dir, "dsh-$day.1.log")
       if (rotated.exists()) rotated.delete()
       file.renameTo(rotated)
     }
-    file.appendText(text)
+    file.appendText(safe)
   }
 }
