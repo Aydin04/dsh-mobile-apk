@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
   internal val mediaPickerController = MediaPickController(this)
   /** 窗口/页面 UI chrome（沉浸式/字体/剪贴板/常亮/主题推送）。 */
   private val uiChrome = WebUiChrome(this)
+  internal val remoteSessionUi by lazy { RemoteSessionUi(this) }
 
   /** 崩溃标记：记录未捕获异常摘要，下次启动测试界面提示（不吞异常）。 */
   internal var crashInfo: String? = null
@@ -165,6 +166,7 @@ class MainActivity : ComponentActivity() {
     root.addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     guideView = guideRenderer.buildGuideView()
     root.addView(guideView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    remoteSessionUi.setupFloatingControls(root)
     setContentView(root)
     ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
       val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -337,6 +339,7 @@ class MainActivity : ComponentActivity() {
     engineFlow.stopMonitoring()
     dirPickerController.cancelTtl()
     guideRenderer.cancelPulse()
+    SshTunnelManager.disconnect()
     // 兜底释放：Activity 销毁时清掉可能仍持有的屏幕常亮锁。
     try {
       if (screenWakeLock != null) {

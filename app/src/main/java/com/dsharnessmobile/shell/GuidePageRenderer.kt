@@ -51,6 +51,7 @@ internal class GuidePageRenderer(private val activity: MainActivity) {
         onCheckUpdate = { onUpdateButton() },
         onGrantStorage = { activity.dirPickerController.openAllFilesAccessSettings() },
         onCopyLog = { copyGuideLog() },
+        onConnectSsh = { activity.remoteSessionUi.showSshDialog() },
       ),
     )
     engineStatus = chrome.engineStatus

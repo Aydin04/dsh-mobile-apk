@@ -44,6 +44,7 @@ internal class GuideCallbacks(
   val onCheckUpdate: () -> Unit,
   val onGrantStorage: () -> Unit,
   val onCopyLog: () -> Unit,
+  val onConnectSsh: () -> Unit = {},
 )
 
 internal fun buildGuideChrome(activity: ComponentActivity, callbacks: GuideCallbacks): GuideChrome {
@@ -361,6 +362,13 @@ internal fun buildGuideChrome(activity: ComponentActivity, callbacks: GuideCallb
   }
 
   val primaryButton = makePrimary()
+  val sshButton = makeSecondary(activity.getString(R.string.ds_connect_vps), callbacks.onConnectSsh).apply {
+    val lp = LinearLayout.LayoutParams(
+      ViewGroup.LayoutParams.MATCH_PARENT, dpix(R.dimen.ds_btn_secondary_height),
+    )
+    lp.topMargin = dpix(R.dimen.ds_space_8)
+    layoutParams = lp
+  }
   val consoleButton = makeSecondary(activity.getString(R.string.ds_open_console), callbacks.onOpenConsole)
   val updateButton = makeSecondary(activity.getString(R.string.ds_check_update), callbacks.onCheckUpdate)
 
@@ -383,6 +391,7 @@ internal fun buildGuideChrome(activity: ComponentActivity, callbacks: GuideCallb
     orientation = LinearLayout.VERTICAL
     setPadding(0, dpix(R.dimen.ds_space_12), 0, 0)
     addView(primaryButton)
+    addView(sshButton)
     addView(secondaryRow)
   }
   root.addView(actionBlock)

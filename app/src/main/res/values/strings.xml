@@ -34,4 +34,16 @@
   <string name="a11y_service_label">DSH Device Control</string>
   <string name="a11y_service_summary">Allow AI assistant to semantically inspect screen and operate controls</string>
   <string name="a11y_service_description">When enabled, the AI assistant can inspect screen controls (text, descriptions, positions) and perform click, input, scroll actions. Only active when enabled by you; requires Full Access session mode.</string>
+
+  <!-- DSH Remote SSH & Display Controls -->
+  <string name="ds_connect_vps">Hubungkan ke VPS (SSH)</string>
+  <string name="ds_vps_ip">IP VPS / Host</string>
+  <string name="ds_vps_port">Port SSH</string>
+  <string name="ds_vps_user">Username</string>
+  <string name="ds_vps_pass">Password</string>
+  <string name="ds_vps_connecting">Menghubungkan SSH...</string>
+  <string name="ds_vps_connect_btn">Connect &amp; Open DSH</string>
+  <string name="ds_vps_connected">SSH Terhubung</string>
+  <string name="ds_view_desktop">Desktop</string>
+  <string name="ds_view_mobile">Mobile</string>
 </resources>
